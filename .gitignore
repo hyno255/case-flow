@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+caseflow.db*
+*.log
+.DS_Store
+.caseflow/

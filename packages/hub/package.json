@@ -1,0 +1,22 @@
+{
+  "name": "@caseflow/hub",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b && cp src/schema.sql dist/",
+    "start": "tsx src/server.ts",
+    "test": "tsx src/store.test.ts && tsx src/server.test.ts"
+  },
+  "dependencies": {
+    "@caseflow/protocol": "1.0.0",
+    "better-sqlite3": "^11.3.0",
+    "fastify": "^4.28.0",
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11"
+  },
+  "license": "Apache-2.0"
+}

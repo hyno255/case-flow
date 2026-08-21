@@ -1,0 +1,7 @@
+# Source plugin: canned bug reports so the quickstart runs offline.
+# For a real source, run `caseflow source init <name>` (GitHub template) or
+# point run: at any script honoring the fetch contract (metadata lines on
+# stdout, content files under --out).
+id: demo-bugs
+run: ./fetch.sh
+on_existing: ignore   # a re-fetched known case means nothing here; see writing-a-source.md for replace/delta

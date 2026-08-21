@@ -1,0 +1,26 @@
+{
+  "name": "caseflow",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Caseflow: local-first, BYO-agent platform that routes streams of work items (bugs, alerts, tickets) through agent pipelines with human-gated review.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @caseflow/protocol -w @caseflow/hub -w @caseflow/runtime -w @caseflow/cli",
+    "typecheck": "tsc -b packages/protocol packages/hub packages/runtime packages/cli",
+    "hub": "tsx packages/hub/src/server.ts",
+    "demo": "bash scripts/quickstart.sh",
+    "test": "npm run -w @caseflow/hub test",
+    "quickstart": "bash scripts/quickstart.sh"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.0"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.11"
+  }
+}

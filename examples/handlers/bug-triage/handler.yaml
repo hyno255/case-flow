@@ -1,0 +1,22 @@
+# Handler plugin: judges cases. Behavior lives here; deployment lives on routes.
+id: demo/bug-triage
+version: 0.1.0
+stages:
+  - name: triage
+    agent: ./triage.sh           # the agent executor runs this script, then judges per the prompt
+                                 # (CASEFLOW_AGENT=mock dry-runs it without credentials)
+    prompt: |
+      Classify this bug report from the script's output and ./source/.
+      Severity rubric: critical = data loss / security / payments / full outage;
+      high = core flow broken, no workaround; medium = degraded, workaround exists;
+      low = cosmetic, copy, minor UX.
+      Owner mapping: crashes/errors -> oncall · performance -> infra · copy/UI -> design.
+      summary: one sentence a reviewer can verify quickly.
+    output_schema:
+      severity: { enum: [low, medium, high, critical] }   # enum -> exact-checked in bench
+      owner: string                                       # free string -> AI-judged in bench
+      summary: string
+writeback: ./writeback.sh
+promotes:
+  severity: triage.severity
+  owner: triage.owner
