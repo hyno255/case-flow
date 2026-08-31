@@ -52,7 +52,7 @@ Braintrust, or LangSmith when you want their tooling over your history.
 
 | Symptom | Where it shows | Fix |
 |---|---|---|
-| Agent produced invalid output twice | `status problems` (error, raw output preserved) | Fix the instructions/schema; re-run with `process --case` once requeued — or ask `caseflow agent` to triage the failure from the recorded evidence |
+| Agent produced invalid output twice | `status problems` (error, raw output preserved) | Read the attempt's log in the case home's `logs/` (the item record points at it); fix the task/schema; re-run with `process --case` once requeued |
 | Write-back failed (tracker down) | case stays `writing_back` | Next `caseflow process <handler>` retries exactly the failures |
 | Runtime died mid-run | explicit `lost` row; case claimable again | Just run `process` again — it resumes from the last persisted stage |
 | Case matched no route | `status problems` (unrouted) | `caseflow route <source> <handler>` — unrouted cases re-route automatically |

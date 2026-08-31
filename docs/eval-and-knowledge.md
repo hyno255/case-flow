@@ -16,7 +16,7 @@ caseflow eval --handler <h> [--sample n]   # the benchmark (below)
 - **Bare confirmation** grades every proposal field `approved`. No agent
   spawns — one keystroke stays free.
 - **With text**, the handler's **evaluator** (first-party instructions,
-  overridable per handler, run through the one agent runner) structures your
+  overridable per handler, run through the default agent) structures your
   words into per-field verdicts:
   fields you contradicted become `corrected` with your value; the rest stay
   `approved`. The evaluator also writes the `lesson` and `reasons` that
@@ -34,7 +34,8 @@ knowledge/2026-08-27-crash-on-login/
 ├── evidence/
 │   ├── case.json        # the frozen intake metadata (replay input)
 │   ├── source/…         # the case home's source/ zone — the material as decided
-│   └── artifacts/…      # the pipeline's artifacts lane, promoted at banking
+│   ├── artifacts/…      # the pipeline's artifacts lane, promoted at banking
+│   └── logs/…           # the execution record — how the pipeline got here
 └── ANSWER.md            # the VERIFICATION — per-field {value, grade} + Lesson + Analysis
 ```
 

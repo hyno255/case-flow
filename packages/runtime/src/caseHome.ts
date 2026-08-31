@@ -11,8 +11,10 @@ import type { IntakeItem } from "@caseflow/protocol";
  *   ├── source/       source-authored full content (any size, any shape) — written at fetch,
  *   │                 read-only after; the hub stores only a pointer to it
  *   ├── context/      plugin territory: repo worktrees, build dirs, scratch — REBUILDABLE, wiped freely
- *   └── artifacts/    the durable lane: patches, logs, analysis — pointer-tracked, fed to
- *                     write-back, promoted to knowledge evidence at eval
+ *   ├── artifacts/    the durable lane: patches, analysis — pointer-tracked, fed to
+ *   │                 write-back, promoted to knowledge evidence at eval
+ *   └── logs/         platform-written execution record, one file per stage attempt
+ *                     (command, timing, exit, full output) — never wiped, promoted to evidence
  *
  * All stages of one processing pass share the home (stage 2 can read the diff
  * stage 1 produced); the generation bump gives a re-opened case its own
@@ -26,7 +28,7 @@ export function casesRoot(): string {
 
 export function caseHome(caseId: string, generation: number, root = casesRoot()): string {
   const home = join(root, caseId, `gen-${generation}`);
-  for (const zone of ["source", "context", "artifacts"]) mkdirSync(join(home, zone), { recursive: true });
+  for (const zone of ["source", "context", "artifacts", "logs"]) mkdirSync(join(home, zone), { recursive: true });
   return home;
 }
 
@@ -40,6 +42,10 @@ export function sourceDir(home: string): string {
 
 export function artifactsDir(home: string): string {
   return join(home, "artifacts");
+}
+
+export function logsDir(home: string): string {
+  return join(home, "logs");
 }
 
 /** Relative paths of everything in the artifacts lane (capped; pointers only). */

@@ -2,13 +2,28 @@
 
 From clone to your first decided case. The sandbox path (mock agent, dry-run
 write-backs) takes minutes and needs no credentials; the real path needs the
-agent runner — the pi CLI — with a provider you're authenticated to:
+default agent — the pi CLI — with a provider you're authenticated to:
 
 ```bash
 npm i -g @earendil-works/pi-coding-agent
-# name your model once (keys stay in pi's own auth, never in caseflow):
-mkdir -p .caseflow && printf 'agent:\n  model: anthropic/claude-sonnet-5\n' > .caseflow/config.yaml
 ```
+
+Agents are yours, defined once in `.caseflow/config.yaml` — a name, a full
+command line, optional standing guidance. Keys stay in each CLI's own auth,
+never here:
+
+```yaml
+agents:
+  default:
+    command: pi -p --no-session --no-context-files --no-skills --no-extensions --model anthropic/claude-sonnet-5
+  code-agent:
+    command: codex exec --model gpt-5.2
+    prompt: "You are on the payments team. Never touch prod configs."
+```
+
+Stages reference agents by name (`use: code-agent`; omitted = `default`),
+and a plugin can ship its own definitions — your config overrides them by
+name, so you can rebind any plugin's agent to a CLI you actually have.
 
 **Credentials, set once** (no env var per shell): run `pi` and type `/login`
 to store a provider key or subscription OAuth in `~/.pi/agent/auth.json` —
@@ -33,9 +48,8 @@ Anthropic-compatible endpoint works:
 ```
 
 (`apiKey` takes a literal, `$ENV_VAR`, or a `!command` for vault lookups.)
-Then point caseflow at it: `agent.model: litellm/your-model-name`. Every
-agent stage, the evaluator, and `caseflow agent` use it — one config, keys
-never touch caseflow.
+Then use it in an agent's command: `pi -p --no-session --model
+litellm/your-model-name`. Keys never touch caseflow.
 
 ```bash
 git clone https://github.com/hyno255/case-flow && cd case-flow
@@ -112,7 +126,6 @@ versions never share files.)
 
 ```bash
 caseflow recall "EU latency"        # the lesson from every similar past decision
-caseflow agent                      # ops copilot: "check health", "triage BUG-2", "run the loop"
 claude mcp add caseflow -- caseflow mcp    # let your agents ask the same wiki mid-task
 
 caseflow eval --handler my-team/triage     # after editing your rubric:

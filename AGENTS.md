@@ -17,8 +17,9 @@ Every change must keep these green before it lands:
   → `status --html`. This is the integration test.
 - `caseflow doctor` passes on both scaffolds (`source init`, `handler init`)
   out of the box.
-- Anything touching the runner path deserves one live run with a real agent
-  (`agent.command` in `.caseflow/config.yaml` can point at any one-shot CLI).
+- Anything touching the agent path deserves one live run with a real agent
+  (bind `agents.default.command` in `.caseflow/config.yaml` to any one-shot
+  CLI).
 
 ## Architecture in three sentences
 
@@ -40,14 +41,16 @@ the plugin's script directly, deterministic, no retry; `agent:` = the pi
 runner runs the same script as orchestrator — flags issues, judges per the
 stage's `prompt:`), and two entry points: live (hub-claimed, every outcome
 submitted) and blind replay (bench — fresh home, frozen evidence/source
-exposed, no ANSWER and no prior artifacts in context). `caseflow agent`
-launches the same runner interactively with shipped ops skills.
+exposed, no ANSWER and no prior artifacts in context). Every attempt leaves
+an execution log in the case home's logs/ lane, tracked on the attempt row
+(duration, log pointer) and promoted to evidence at banking.
 
 ## Invariants (do not "simplify" away)
 
-1. Platform never calls model APIs / holds credentials — ONE agent runner
-   (pi, any provider) spawned under user auth; config names a model, never a
-   key. Exec stages are plain scripts.
+1. Platform never calls model APIs / holds credentials — agents are
+   user-defined `{command, prompt}` pairs spawned under user auth
+   (deployment config overrides plugin definitions by name); config names
+   commands, never a key. Exec stages are plain scripts.
 2. Deterministic routing; never an AI orchestrator.
 3. Append-only `attempts`/`evals`; corrections are `overridden` rows;
    `UNIQUE(item, stage, attempt)` is the idempotency key.
@@ -88,11 +91,10 @@ launches the same runner interactively with shipped ops skills.
   `schema.sql`).
 - Env: `CASEFLOW_DB`, `CASEFLOW_PORT`, `CASEFLOW_HUB_URL`,
   `CASEFLOW_KNOWLEDGE` (corpus dir), `CASEFLOW_CASES` (case homes root),
-  `CASEFLOW_AGENT=mock` (swap the runner for the synthetic backend —
+  `CASEFLOW_AGENT=mock` (swap every agent for the synthetic backend —
   schema-conforming stage results, all-match evaluator judgments; the whole
-  loop credential-free). Runner config: `.caseflow/config.yaml`
-  (`agent.model`, optional `agent.command` override — keys never live
-  there).
+  loop credential-free). Agent config: `.caseflow/config.yaml`
+  (`agents: <name>: {command, prompt}` — keys never live there).
 - Scaffold content is embedded in `packages/cli/src/scaffold.ts` — no
   install-tree file dependencies.
 - Comments are self-contained: state the contract in plain words; never

@@ -57,26 +57,19 @@ done
 `;
 
 export const HANDLER_YAML = (id: string) => `# Handler plugin: judges cases. Behavior lives here; deployment lives on routes.
-# Every stage is YOUR script; the key picks its executor — exactly one of:
-#   exec: <script>   bash runs it directly (deterministic, no AI;
-#                    case record on stdin, JSON on stdout)
-#   agent: <script>  the configured agent runs it as orchestrator — executes the
-#                    script in the case workspace, flags any issue, answers with
-#                    the stage's JSON. \`prompt:\` injects your guidance into it.
+# A stage names a TASK and picks its executor — exactly one of:
+#   exec: <script>  bash runs it directly (deterministic, no AI;
+#                   case record on stdin, JSON on stdout)
+#   agent: <task>   an agent runs it as orchestrator. The task is a script
+#                   (run it), a document (follow it), or a folder (read the
+#                   materials and follow them). \`use:\` names which agent —
+#                   defined below or in .caseflow/config.yaml — orchestrates;
+#                   omitted = default. CASEFLOW_AGENT=mock dry-runs it free.
 id: ${id}
 version: 0.1.0
 stages:
   - name: triage
-    agent: ./triage.sh           # CASEFLOW_AGENT=mock dry-runs agent stages without credentials
-    prompt: |
-      Classify this case from the script's output and ./source/.
-      Severity rubric (edit to match your world):
-      - critical: data loss, security exposure, payment failure, full outage
-      - high: core flow broken for a user segment, no workaround
-      - medium: degraded experience, workaround exists
-      - low: cosmetic, copy, minor UX
-      Owner mapping: crashes/errors -> oncall · performance -> infra · copy/UI -> design.
-      summary: one sentence a reviewer can verify quickly.
+    agent: ./triage.md
     output_schema:
       severity: { enum: [low, medium, high, critical] }   # enum -> exact-checked in bench
       owner: string                                       # free string -> AI-judged in bench
@@ -85,17 +78,29 @@ writeback: ./writeback.sh        # stdin: case record -> stdout: receipt (REQUIR
 promotes:                        # feed status/reporting without coupling
   severity: triage.severity
   owner: triage.owner
+# agents:                        # plugin-shipped agents; deployment config overrides by name
+#   reviewer:
+#     command: opencode run
+#     prompt: "Judge strictly; cite a file path for every claim."
 # evaluator: ./my-evaluator.md   # optional: override the first-party evaluator instructions
 `;
 
-export const HANDLER_TRIAGE_SCRIPT = `#!/usr/bin/env bash
-# The stage script: gather this case's evidence. The agent executor runs it,
-# then judges per the prompt in handler.yaml. Grow it as needed — pull logs,
-# run a repro, query your systems.
-set -euo pipefail
-cat ./case.json
-echo "--- source material ---"
-cat ./source/* 2>/dev/null || echo "(no source files)"
+export const HANDLER_TRIAGE_TASK = `# Triage this case
+
+Read ./case.json and the material under ./source/, then classify.
+
+Severity rubric (edit to match your world):
+- critical: data loss, security exposure, payment failure, full outage
+- high: core flow broken for a user segment, no workaround
+- medium: degraded experience, workaround exists
+- low: cosmetic, copy, minor UX
+
+Set \`owner\` to the responsible person or rotation (edit this mapping):
+- crashes and errors: oncall
+- performance: infra
+- copy/UI: design
+
+\`summary\`: one sentence a reviewer can verify quickly.
 `;
 
 export const HANDLER_WRITEBACK = `#!/usr/bin/env bash

@@ -1,6 +1,6 @@
 {
   "name": "@caseflow/hub",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,7 +10,7 @@
     "test": "tsx src/store.test.ts && tsx src/server.test.ts"
   },
   "dependencies": {
-    "@caseflow/protocol": "1.0.0",
+    "@caseflow/protocol": "0.0.1",
     "better-sqlite3": "^11.3.0",
     "fastify": "^4.28.0",
     "ulid": "^2.3.0"

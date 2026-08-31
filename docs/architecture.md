@@ -12,11 +12,11 @@ How Caseflow works and why it is shaped this way. Hands-on guides:
 2. **Everything installable is a plugin.** One git package format, four
    kinds: sources (bring cases in), handlers (judge them), evaluators
    (structure decisions), recall (retrieval). Same verbs for every kind.
-3. **The platform never calls a model API, never holds a credential.** All
-   intelligence runs through ONE agent runner — the pi CLI (any provider),
-   spawned as a subprocess under the user's own auth. Caseflow config names
-   a model; the runner holds the keys. Exec stages can shell out to any CLI
-   they like — still the user's auth.
+3. **The platform never calls a model API, never holds a credential.**
+   Agents are user-defined `{command, prompt}` pairs — pi by default, or any
+   CLI that takes a prompt and prints a reply — spawned as subprocesses
+   under the user's own auth. Config names commands; each CLI holds its own
+   keys. Exec stages are plain scripts — still the user's auth.
 4. **Humans hold the gate.** One mode ships: every case waits for a human
    eval. Automation tiers are a designed future, unlocked per field by
    benchmark evidence — never by config alone.
@@ -75,12 +75,9 @@ How Caseflow works and why it is shaped this way. Hands-on guides:
   the live path (hub-claimed, every outcome submitted) and the blind-replay
   path (bench: fresh home, frozen source material exposed, no answer in
   context).
-- **CLI**: the 10-verb surface, plugin scaffolds, the MCP server, the status
-  page, and `caseflow agent` — the interactive ops copilot: the runner
-  launched with shipped operator skills (health, operate, failure triage,
-  explain), acting only through the same public verbs and read API under the
-  user's auth. A thin shell over the hub client — any richer client uses the
-  same API.
+- **CLI**: the 9-verb surface, plugin scaffolds, the MCP server, the status
+  page. A thin shell over the hub client — any richer client uses the same
+  API.
 
 ## The case lifecycle
 

@@ -164,6 +164,7 @@ export function buildServer(store: Store, knowledgeRoot = process.env.CASEFLOW_K
       itemId: r.item_id, handlerId: item.handler_id, handlerVersion: item.handler_version,
       stage: r.stage_name, attempt: r.attempt, agent: r.agent, promptHash: r.prompt_hash,
       status, result: r.result, rawOutput: r.raw_output, artifacts: r.artifacts,
+      durationMs: r.duration_ms, log: r.log,
     });
     if (!inserted) return { ok: true, idempotent_replay: true, recorded_status: status };
 
@@ -238,6 +239,7 @@ export function buildServer(store: Store, knowledgeRoot = process.env.CASEFLOW_K
     return {
       ...item, meta: JSON.parse(item.meta),
       results: store.latestResults(id), artifacts: store.itemArtifacts(id),
+      attempts: store.itemAttempts(id),
     };
   });
 
@@ -259,8 +261,10 @@ function stageSchema(manifest: HandlerManifest, stage: string): OutputSchema | u
 function missingRequirements(manifest: HandlerManifest, caps: CapabilityReport): string[] {
   const missing: string[] = [];
   const stages = [...(manifest.screen ? [manifest.screen] : []), ...manifest.stages];
-  if (stages.some((s) => s.agent) && !caps.capabilities.runner.ok) {
-    missing.push(`agent runner (${caps.capabilities.runner.detail ?? "not reported"})`);
+  const referenced = new Set(stages.filter((s) => s.agent).map((s) => s.use ?? "default"));
+  for (const name of referenced) {
+    const have = caps.capabilities.agents.find((a) => a.name === name);
+    if (!have?.ok) missing.push(`agent:${name}${have?.detail ? ` (${have.detail})` : ""}`);
   }
   for (const t of manifest.requires?.tools ?? []) {
     const have = caps.capabilities.tools.find((x) => x.name === t.name);

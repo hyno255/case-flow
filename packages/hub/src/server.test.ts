@@ -38,9 +38,9 @@ const manifest = {
 };
 
 // ---- handshake: protocol version gate
-assert.equal((await post("/v1/handshake", { protocol: "2.0", runtime_id: "rt", capabilities: { runner: { ok: true }, tools: [] } })).code, 426);
-assert.equal((await post("/v1/handshake", { protocol: "1.0", runtime_id: "rt", capabilities: { runner: { ok: true }, tools: [] } })).code, 200);
-await post("/v1/handshake", { protocol: "1.0", runtime_id: "intruder", capabilities: { runner: { ok: true }, tools: [] } });
+assert.equal((await post("/v1/handshake", { protocol: "2.0", runtime_id: "rt", capabilities: { agents: [{ name: "default", ok: true }], tools: [] } })).code, 426);
+assert.equal((await post("/v1/handshake", { protocol: "1.0", runtime_id: "rt", capabilities: { agents: [{ name: "default", ok: true }], tools: [] } })).code, 200);
+await post("/v1/handshake", { protocol: "1.0", runtime_id: "intruder", capabilities: { agents: [{ name: "default", ok: true }], tools: [] } });
 
 // ---- register + route (unknown source/handler refused) + ingest
 await post("/v1/handlers", { manifest, package_ref: "/tmp/pkg" });
@@ -85,7 +85,8 @@ store.setItemState(id, "routed", null);
 const c2 = await claim("rt");
 assert.equal(c2.items[0].next_attempts.triage, 2); // hub-negotiated numbering survives the failure
 await submit("rt", id, "screen", c2.items[0].next_attempts.screen ?? 2, { status: "ok", result: { worth_triaging: true, reason: "r" } });
-const good = (await submit("rt", id, "triage", 2, { status: "ok", result: { severity: "high", owner: "alice" }, artifacts: ["analysis.md"] })).body;
+const good = (await submit("rt", id, "triage", 2, { status: "ok", result: { severity: "high", owner: "alice" },
+  artifacts: ["analysis.md"], duration_ms: 1234, log: "triage-2.log" })).body;
 assert.equal(good.recorded_status, "ok");
 assert.equal(store.getItem(id)!.state, "needs_eval"); // every case waits for a human
 assert.equal(store.getItem(id)!.p_severity, "high");
@@ -124,9 +125,13 @@ const status = (await get("/v1/status")) as { counts: Record<string, number>; pr
 assert.equal(status.counts.done, 1);
 assert.equal(status.problems.length, 1); // the dismissed case is visible, not silent
 
-// ---- artifacts round-trip: pointers land on the case record
-const rec = (await get(`/v1/items/${id}`)) as { artifacts: string[]; generation: number; meta: Record<string, unknown> };
+// ---- artifacts + execution tracking round-trip: pointers land on the case record
+const rec = (await get(`/v1/items/${id}`)) as { artifacts: string[]; generation: number; meta: Record<string, unknown>;
+  attempts: { stage_name: string; attempt: number; duration_ms: number | null; log: string | null }[] };
 assert.deepEqual(rec.artifacts, ["analysis.md"]);
+const tracked = rec.attempts.find((a) => a.stage_name === "triage" && a.attempt === 2)!;
+assert.equal(tracked.duration_ms, 1234);
+assert.equal(tracked.log, "triage-2.log");
 assert.equal(rec.generation, 1);
 assert.deepEqual(rec.meta, { labels: ["bug"] });
 

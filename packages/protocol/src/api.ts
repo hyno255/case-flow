@@ -9,7 +9,8 @@ export const CapabilityReport = z.object({
   protocol: z.string(),
   runtime_id: z.string(),
   capabilities: z.object({
-    runner: z.object({ ok: z.boolean(), detail: z.string().optional() }), // the one agent runner (or mock)
+    /** Every agent name the runtime can resolve and spawn (including "default"). */
+    agents: z.array(z.object({ name: z.string(), ok: z.boolean(), detail: z.string().optional() })).default([]),
     tools: z.array(z.object({ name: z.string(), ok: z.boolean() })).default([]),
   }),
 });
@@ -53,6 +54,8 @@ export const ResultSubmission = z.object({
   raw_output: z.string().optional(),      // preserved on invalid_output / agent_error
   /** Relative paths under the workspace's artifacts/ — the durable lane. Pointers only; content stays opaque. */
   artifacts: z.array(z.string()).max(200).optional(),
+  duration_ms: z.number().int().nonnegative().optional(),
+  log: z.string().optional(),             // relative path under the workspace's logs/ — the execution record
 });
 export type ResultSubmission = z.infer<typeof ResultSubmission>;
 

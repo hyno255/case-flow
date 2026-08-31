@@ -1,6 +1,6 @@
 {
   "name": "@caseflow/cli",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "type": "module",
   "bin": {
     "caseflow": "dist/caseflow.js"
@@ -9,8 +9,8 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@caseflow/protocol": "1.0.0",
-    "@caseflow/runtime": "1.0.0",
+    "@caseflow/protocol": "0.0.1",
+    "@caseflow/runtime": "0.0.1",
     "commander": "^12.1.0"
   },
   "license": "Apache-2.0"

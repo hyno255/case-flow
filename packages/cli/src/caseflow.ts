@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * caseflow — the CLI control plane.
- * Surface (10 verbs): source init|add · handler init|add · route · doctor
- *                     fetch · process · status · eval · recall · agent
+ * Surface (9 verbs): source init|add · handler init|add · route · doctor
+ *                    fetch · process · status · eval · recall
  * Behavior lives in plugins; deployment lives on routes; the CLI stays thin.
  */
 import { Command } from "commander";
@@ -13,16 +13,15 @@ import { hostname } from "node:os";
 import {
   HubClient, startHeartbeat, loadHandlerManifest, loadSourceManifest, runDoctor, toCapabilityReport,
   processItem, runStagesLocal, proposalFields, runOutputScript, runScript, runEvaluator,
-  runAgent, mockReply, orchestratorBootstrap, extractJson,
-  caseHome, casesRoot, sourceDir, artifactsDir, listArtifacts, clearContext,
+  mockReply, orchestratorBootstrap, resolveAgent, extractJson,
+  caseHome, casesRoot, sourceDir, artifactsDir, logsDir, listArtifacts, clearContext,
 } from "@caseflow/runtime";
-import { launchOpsAgent } from "./opsAgent.js";
 import {
   writeKnowledgePackage, scanKnowledge, archivePackagesForCase, type KnowledgeFields, type IntakeItem,
   type HandlerManifest, type SourceManifest, type Grade, type OutputSchema, type Judgment,
 } from "@caseflow/protocol";
 import { renderStatusHtml } from "./report.js";
-import { SOURCE_YAML, SOURCE_FETCH, HANDLER_YAML, HANDLER_TRIAGE_SCRIPT, HANDLER_WRITEBACK, SEED_CASES } from "./scaffold.js";
+import { SOURCE_YAML, SOURCE_FETCH, HANDLER_YAML, HANDLER_TRIAGE_TASK, HANDLER_WRITEBACK, SEED_CASES } from "./scaffold.js";
 import { runMcpServer } from "./mcp.js";
 
 const program = new Command();
@@ -33,7 +32,7 @@ const knowledgeRoot = resolve(process.env.CASEFLOW_KNOWLEDGE ?? "knowledge");
 
 program.name("caseflow")
   .description("Turn any stream of work into cases: your AI judges, you decide, every decision compounds")
-  .version("1.0.0")
+  .version("0.0.1")
   .addHelpText("after", `
 Typical workflow:
   setup   caseflow source init my-source        (edit source.yaml: scope lives there)
@@ -46,11 +45,10 @@ Typical workflow:
           caseflow status                       (the queues)
           caseflow eval <case> ["your decision"]  (decide → write back → bank knowledge)
           caseflow recall "query"               (ask everything you've decided before)
-          caseflow agent                        (ops copilot: health, runs, failure triage — interactive)
   measure caseflow eval --handler team/my-handler   (blind-replay banked cases, per-field scores)
 
-The agent runner (pi by default) is configured in .caseflow/config.yaml (agent.model);
-credentials stay in the runner's own auth. CASEFLOW_AGENT=mock runs everything credential-free.`);
+Agents are yours: define them in .caseflow/config.yaml (agents: <name>: {command, prompt});
+credentials stay in each CLI's own auth. CASEFLOW_AGENT=mock runs everything credential-free.`);
 
 // ---------- helpers ----------
 
@@ -152,14 +150,14 @@ sourceCmd.command("add <ref>")
 const handlerCmd = program.command("handler").description("Handler plugins: judge cases (init / add)");
 
 handlerCmd.command("init <name>")
-  .description("Scaffold a handler plugin — stage script, rubric prompt, output fields, write-back, seed knowledge")
+  .description("Scaffold a handler plugin — stage task, output fields, write-back, seed knowledge")
   .action((name: string) => {
     const id = name.includes("/") ? name : `${user}/${name}`;
     const dir = resolve(basename(name));
     if (existsSync(dir)) { console.error(`✖ ${dir} already exists`); process.exit(1); }
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "handler.yaml"), HANDLER_YAML(id));
-    writeFileSync(join(dir, "triage.sh"), HANDLER_TRIAGE_SCRIPT, { mode: 0o755 });
+    writeFileSync(join(dir, "triage.md"), HANDLER_TRIAGE_TASK);
     writeFileSync(join(dir, "writeback.sh"), HANDLER_WRITEBACK, { mode: 0o755 });
     // Seed knowledge: examples that double as the first benchmark cases; their
     // source files land in evidence/source/ exactly as a live case's would.
@@ -171,8 +169,8 @@ handlerCmd.command("init <name>")
         writeFileSync(join(pkgDir, "evidence", "source", name), content);
       }
     }
-    console.log(`✔ Created ${dir} (handler.yaml, triage.sh, writeback.sh, ${SEED_CASES(id).length} seed knowledge cases)`);
-    console.log(`  Next: edit the prompt in handler.yaml (your rubric) and triage.sh (your evidence), then: caseflow handler add ${basename(name)}`);
+    console.log(`✔ Created ${dir} (handler.yaml, triage.md, writeback.sh, ${SEED_CASES(id).length} seed knowledge cases)`);
+    console.log(`  Next: edit triage.md (your rubric — it IS the stage's task), then: caseflow handler add ${basename(name)}`);
   });
 
 handlerCmd.command("add <ref>")
@@ -213,13 +211,14 @@ program.command("doctor [dir]")
     if (hm) {
       const stages = [...(hm.screen ? [{ ...hm.screen, name: "screen" }] : []), ...hm.stages];
       for (const s of stages) {
-        const mode = s.exec ? "exec" : "agent";
-        const script = join(d, (s.exec ?? s.agent)!);
-        if (existsSync(script)) console.log(`✔ stage ${s.name} (${mode})`);
-        else { console.log(`✖ stage ${s.name}\n  → missing script ${script}`); failed++; }
+        const label = s.exec ? "exec" : `agent · ${s.use ?? "default"}`;
+        const task = join(d, (s.exec ?? s.agent)!);
+        if (existsSync(task)) console.log(`✔ stage ${s.name} (${label})`);
+        else { console.log(`✖ stage ${s.name}\n  → missing task ${task}`); failed++; }
         if (s.exec) continue;
         // Mock smoke: the orchestrator bootstrap/extraction path must round-trip.
-        const smoke = mockReply(orchestratorBootstrap(s.name, script, s.prompt, s.output_schema as OutputSchema));
+        const agent = resolveAgent(undefined, {});
+        const smoke = mockReply(orchestratorBootstrap(s.name, task, agent, s.output_schema as OutputSchema));
         if (extractJson(smoke.stdout) === undefined) { console.log(`✖ stage ${s.name}: mock pipeline failed`); failed++; }
       }
       if (hm.writeback) {
@@ -439,7 +438,7 @@ program.command("eval [case] [input]")
       case_id: item.item_id, handler_id: item.handler_id, source_id: item.source_id,
       title: item.title, tags: [], banked_at: new Date().toISOString(),
       case: env, fields, decided_by: user, lesson, analysis: reasons,
-    }, { sourceDir: sourceDir(ws), artifactsDir: artifactsDir(ws) });
+    }, { sourceDir: sourceDir(ws), artifactsDir: artifactsDir(ws), logsDir: logsDir(ws) });
     if (wroteBack) clearContext(ws); // rebuildable by contract; evidence is banked, receipts are in the hub
     console.log(`✔ ${item.external_id} ${input ? "decided" : "confirmed"} · ${receiptNote}`);
     console.log(`  banked ${path}${archived ? ` (archived ${archived} earlier generation)` : ""}`);
@@ -502,21 +501,6 @@ program.command("recall <query>")
       console.log(`  → ${r.lesson || "(no lesson recorded)"}`);
       console.log(`  outcome: ${outcome}\n`);
     }
-  });
-
-// ---------- agent: the ops copilot (interactive) and one-shot runner ----------
-program.command("agent [prompt...]")
-  .description("Talk to the ops agent — interactive without arguments; one-shot with a prompt")
-  .action(async (promptWords: string[]) => {
-    if (promptWords.length) {
-      // One-shot: the same runner that backs agent-mode stages; exec scripts
-      // and delta hooks call this for AI on demand.
-      const out = await runAgent(promptWords.join(" "), { cwd: process.cwd(), timeoutMs: 300_000 });
-      if (out.stdout.trim()) console.log(out.stdout.trim());
-      if (out.code !== 0) { console.error(out.stderr.trim()); process.exit(out.code ?? 1); }
-      return;
-    }
-    launchOpsAgent();
   });
 
 // ---------- mcp (serves recall_knowledge / get_case to any MCP-speaking agent) ----------

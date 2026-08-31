@@ -12,7 +12,8 @@ import type { IntakeItem } from "./intake.js";
  *   ├── evidence/
  *   │   ├── case.json        the frozen intake metadata (replay input)
  *   │   ├── source/…         the case home's source/ zone, frozen as decided
- *   │   └── artifacts/…      the pipeline's keepers, frozen as decided
+ *   │   ├── artifacts/…      the pipeline's keepers, frozen as decided
+ *   │   └── logs/…           the execution record — how the pipeline got here
  *   └── ANSWER.md            the VERIFICATION — per-field {value, grade} + analysis
  *
  * Git is the source of truth; any index over these files is rebuildable.
@@ -51,7 +52,7 @@ const EVIDENCE_FILE_CAP_BYTES = 5 * 1024 * 1024;
 
 export function writeKnowledgePackage(
   root: string, pkg: Omit<KnowledgePackage, "dir">,
-  dirs: { sourceDir?: string; artifactsDir?: string } = {},
+  dirs: { sourceDir?: string; artifactsDir?: string; logsDir?: string } = {},
 ): string {
   let dir = knowledgeSlug(pkg.title, pkg.banked_at);
   let path = join(root, dir);
@@ -72,7 +73,7 @@ export function writeKnowledgePackage(
       budget -= size;
     }
   };
-  for (const [name, src] of [["source", dirs.sourceDir], ["artifacts", dirs.artifactsDir]] as const) {
+  for (const [name, src] of [["source", dirs.sourceDir], ["artifacts", dirs.artifactsDir], ["logs", dirs.logsDir]] as const) {
     if (!src || !existsSync(src)) continue;
     const dst = join(path, "evidence", name);
     mkdirSync(dst, { recursive: true });

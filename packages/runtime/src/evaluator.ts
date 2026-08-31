@@ -2,7 +2,7 @@ import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Judgment, type IntakeItem, type HandlerManifest } from "@caseflow/protocol";
-import { runAgent } from "./runner.js";
+import { runAgent, resolveAgent } from "./runner.js";
 import { extractJson } from "./executor.js";
 import { packagePath } from "./handlerPackage.js";
 
@@ -84,7 +84,10 @@ export async function runEvaluator(
   const workdir = mkdtempSync(join(tmpdir(), "caseflow-eval-"));
   try {
     writeFileSync(join(workdir, "case.json"), JSON.stringify(input, null, 2));
-    const out = await runAgent(prompt, { cwd: workdir, timeoutMs: opts.timeoutMs ?? 300_000 });
+    const out = await runAgent(prompt, {
+      cwd: workdir, timeoutMs: opts.timeoutMs ?? 300_000,
+      agent: resolveAgent(undefined, manifest.agents),
+    });
     const json = extractJson(out.stdout);
     const parsed = Judgment.safeParse(json);
     if (!parsed.success) {

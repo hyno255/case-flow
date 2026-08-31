@@ -2,14 +2,17 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse } from "yaml";
+import type { AgentDef } from "@caseflow/protocol";
 
 /**
- * The agent runner: ONE way to invoke an agent, backing agent-mode stages,
- * the evaluator, and `caseflow agent`. Default backend is the pi CLI
- * (multi-provider), spawned as a subprocess under the local user's auth —
- * the platform names a model in config but never holds a credential.
- * `CASEFLOW_AGENT=mock` swaps in a synthetic backend so demos, CI, and
- * doctor run with zero credentials.
+ * User-owned agents. An agent is `{command?, prompt?}`: the full command line
+ * (the prompt is appended as its final argument; reply on stdout) and its
+ * standing guidance. Definitions live in the deployment config
+ * (.caseflow/config.yaml `agents:`) and in plugin manifests; resolution is
+ * deployment → plugin → built-in pi default, so the machine that holds the
+ * auth always has the last word. The platform spawns commands and reads
+ * stdout — it never calls a model API and never holds a credential.
+ * `CASEFLOW_AGENT=mock` swaps every agent for the synthetic backend.
  */
 export interface RunnerResult {
   stdout: string;
@@ -19,40 +22,48 @@ export interface RunnerResult {
   timedOut?: boolean;
 }
 
-export interface AgentConfig {
-  command: string[];   // binary + base flags; the prompt is appended as the final argument
-  model?: string;      // passed as --model (pi accepts "provider/id"); keys stay in the runner's own auth
-  args: string[];      // extra flags, appended before the prompt
+export interface ResolvedAgent {
+  name: string;
+  command: string[];
+  prompt?: string;
 }
 
-/** pi one-shot, hermetic: no session, no ambient context/skills/extensions. */
-const DEFAULT_COMMAND = ["pi", "-p", "--no-session", "--no-context-files", "--no-skills", "--no-extensions"];
+/** The built-in default: pi, one-shot, hermetic. Override by defining agents.default. */
+export const DEFAULT_PI_COMMAND = "pi -p --no-session --no-context-files --no-skills --no-extensions";
 
-export function loadAgentConfig(path = process.env.CASEFLOW_CONFIG ?? ".caseflow/config.yaml"): AgentConfig {
-  let raw: { agent?: { model?: string; command?: string; args?: string[] } } = {};
+export function loadDeploymentAgents(path = process.env.CASEFLOW_CONFIG ?? ".caseflow/config.yaml"): Record<string, AgentDef> {
   const file = resolve(path);
-  if (existsSync(file)) raw = (parse(readFileSync(file, "utf8")) ?? {}) as typeof raw;
-  const a = raw.agent ?? {};
-  return {
-    command: a.command ? a.command.split(/\s+/) : DEFAULT_COMMAND,
-    model: a.model,
-    args: a.args ?? [],
-  };
+  if (!existsSync(file)) return {};
+  const raw = (parse(readFileSync(file, "utf8")) ?? {}) as { agents?: Record<string, AgentDef> };
+  return raw.agents ?? {};
 }
 
-export function runAgent(prompt: string, opts: { cwd: string; timeoutMs: number }): Promise<RunnerResult> {
+/** Deployment definition wins over the plugin's; "default" always resolves. */
+export function resolveAgent(name: string | undefined, pluginAgents: Record<string, AgentDef> = {}): ResolvedAgent {
+  const n = name ?? "default";
+  const def = loadDeploymentAgents()[n] ?? pluginAgents[n] ?? (n === "default" ? {} : undefined);
+  if (!def) {
+    throw new Error(`agent '${n}' is not defined — add agents.${n} to .caseflow/config.yaml or the plugin manifest`);
+  }
+  return { name: n, command: (def.command ?? DEFAULT_PI_COMMAND).split(/\s+/), prompt: def.prompt };
+}
+
+export function runAgent(
+  prompt: string,
+  opts: { cwd: string; timeoutMs: number; agent: ResolvedAgent; sessionFile?: string },
+): Promise<RunnerResult> {
   if (process.env.CASEFLOW_AGENT === "mock") return Promise.resolve(mockReply(prompt));
-  const cfg = loadAgentConfig();
-  const args = [
-    ...cfg.command.slice(1),
-    ...(cfg.model ? ["--model", cfg.model] : []),
-    ...cfg.args,
-    prompt,
-  ];
+  let args = opts.agent.command.slice(1);
+  // Execution tracking: pi can record its full tool-call transcript. Only for
+  // pi — the platform does not inject flags into commands it doesn't know.
+  if (opts.sessionFile && opts.agent.command[0] === "pi") {
+    args = args.filter((a) => a !== "--no-session").concat("--session", opts.sessionFile);
+  }
+  args.push(prompt);
   return new Promise((res) => {
     // detached: the child gets its own process group, so a timeout kill takes
     // the agent's own subprocesses with it instead of orphaning them.
-    const child = spawn(cfg.command[0], args, { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    const child = spawn(opts.agent.command[0], args, { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
     let stdout = "", stderr = "", timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -104,5 +115,5 @@ export function mockReply(prompt: string): RunnerResult {
       return { stdout: JSON.stringify(out), stderr: "", code: 0 };
     } catch { /* fall through */ }
   }
-  return { stdout: '{"error": "mock runner found no parsable output contract"}', stderr: "", code: 0 };
+  return { stdout: '{"error": "mock agent found no parsable output contract"}', stderr: "", code: 0 };
 }

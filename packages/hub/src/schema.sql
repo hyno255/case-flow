@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS attempts (           -- APPEND-ONLY
   result JSON,
   raw_output TEXT,
   artifacts JSON,                               -- relative paths under the case home's artifacts/ lane (pointers only)
+  duration_ms INTEGER,
+  log TEXT,                                     -- relative path under the case home's logs/ (the execution record)
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   UNIQUE(item_id, stage_name, attempt)          -- idempotency key for result submission

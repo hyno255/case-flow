@@ -251,14 +251,15 @@ export class Store {
 
   recordResult(p: { itemId: string; handlerId: string | null; handlerVersion: string | null; stage: string;
     attempt: number; agent?: string; promptHash?: string; status: ResultStatus; result?: unknown; rawOutput?: string;
-    artifacts?: string[] }): boolean {
+    artifacts?: string[]; durationMs?: number; log?: string }): boolean {
     try {
       this.db.prepare(`INSERT INTO attempts
-        (result_id, item_id, handler_id, handler_version, stage_name, attempt, agent, prompt_hash, result, raw_output, artifacts, status, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        (result_id, item_id, handler_id, handler_version, stage_name, attempt, agent, prompt_hash, result, raw_output, artifacts, duration_ms, log, status, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(ulid(), p.itemId, p.handlerId, p.handlerVersion, p.stage, p.attempt, p.agent ?? null,
           p.promptHash ?? null, p.result === undefined ? null : JSON.stringify(p.result), p.rawOutput ?? null,
-          p.artifacts?.length ? JSON.stringify(p.artifacts) : null, p.status, this.now());
+          p.artifacts?.length ? JSON.stringify(p.artifacts) : null, p.durationMs ?? null, p.log ?? null,
+          p.status, this.now());
       return true;
     } catch (e: unknown) {
       if (String(e).includes("UNIQUE")) return false; // idempotent replay
@@ -283,6 +284,13 @@ export class Store {
     const out = new Set<string>();
     for (const r of rows) for (const a of JSON.parse(r.artifacts) as string[]) out.add(a);
     return [...out];
+  }
+
+  /** Per-attempt execution summary: what ran, how long, and where its log lives. */
+  itemAttempts(itemId: string): { stage_name: string; attempt: number; status: string; agent: string | null;
+    duration_ms: number | null; log: string | null; created_at: string }[] {
+    return this.db.prepare(`SELECT stage_name, attempt, status, agent, duration_ms, log, created_at
+      FROM attempts WHERE item_id=? ORDER BY created_at ASC, rowid ASC`).all(itemId) as ReturnType<Store["itemAttempts"]>;
   }
 
   getItemBySource(sourceId: string, externalId: string): ItemRow | undefined {

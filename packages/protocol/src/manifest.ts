@@ -18,18 +18,34 @@ const FieldSpecSchema: z.ZodType<unknown> = z.union([
 ]);
 
 /**
- * Every stage is a user script; the key chooses its EXECUTOR — exactly one:
- *   exec: <script>   bash runs it directly — deterministic, no AI
- *                    (cwd = case workspace, case record on stdin, JSON on stdout)
- *   agent: <script>  the configured agent runs it as orchestrator — it executes
- *                    the script in the case workspace, reports or flags any
- *                    issue, and answers with the stage's JSON. `prompt` injects
- *                    the plugin's own guidance into that orchestrator.
+ * An agent is two strings, both optional: the full command line (the prompt is
+ * appended as its final argument; reply on stdout) and standing guidance
+ * injected into every run. No command = the built-in pi default. Definitions
+ * live in the deployment config (.caseflow/config.yaml `agents:`) and/or the
+ * plugin manifest; the deployment wins by name, so a consumer can rebind a
+ * plugin's agent to their own CLI without touching the plugin.
+ */
+export const AgentDef = z.object({
+  command: z.string().optional(),
+  prompt: z.string().optional(),
+});
+export type AgentDef = z.infer<typeof AgentDef>;
+
+/**
+ * A stage names a TASK and picks its executor — exactly one key:
+ *   exec: <script>  bash runs it directly — deterministic, no AI
+ *                   (cwd = case workspace, case record on stdin, JSON on stdout)
+ *   agent: <task>   an agent runs it as orchestrator. The task is a script
+ *                   (run it), a document (follow it), or a folder (read the
+ *                   materials and follow them). `use` names which defined
+ *                   agent orchestrates; omitted = "default".
+ * Stage-specific guidance lives inside the task; standing guidance lives on
+ * the agent definition — a stage only references.
  */
 const stageMode = {
   agent: z.string().optional(),
   exec: z.string().optional(),
-  prompt: z.string().optional(),        // agent executor only: appended to the orchestrator prompt
+  use: z.string().optional(),
   output_schema: z.record(FieldSpecSchema),
 };
 const exactlyOneMode = (s: { agent?: string; exec?: string }) => !!s.agent !== !!s.exec;
@@ -48,6 +64,7 @@ export const HandlerManifest = z.object({
   version: z.string(),
   owners: z.array(z.string()).default([]),
   requires: Requires,
+  agents: z.record(AgentDef).default({}),            // plugin-shipped agent definitions (deployment may override by name)
   screen: ScreenDef.optional(),                      // cheap gate; screened-out cases are dismissed (kept, visible)
   stages: z.array(StageDef).min(1),
   writeback: z.string().optional(),                  // script: stdin case record -> stdout receipt

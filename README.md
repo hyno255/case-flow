@@ -16,10 +16,11 @@ fetch → route → process (your AI) → eval (you) → write-back (receipted)
 
 **AI at the leaves, code at the branches.** Agents judge one case at a time;
 routing, state, retries, and receipts are deterministic platform code. The
-platform never calls a model API and never holds a credential — one agent
-runner (the [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
-CLI, any provider) is spawned under your own auth, and deterministic stages
-run as plain scripts.
+platform never calls a model API and never holds a credential — agents are
+CLIs you define ([pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+by default; codex, opencode, claude, anything that takes a prompt and prints
+a reply), spawned under your own auth, and deterministic stages run as plain
+scripts.
 
 ## Quick start (two minutes, zero credentials)
 
@@ -41,7 +42,7 @@ the handler per field. Read `scripts/quickstart.sh` — it is the product in
 
 Then do it for real: [docs/getting-started.md](docs/getting-started.md).
 
-## The surface — 10 verbs
+## The surface — 9 verbs
 
 ```bash
 # setup
@@ -58,7 +59,6 @@ caseflow process <handler> [--case <id>]   # your agents judge the queue
 caseflow status [handler] [view] [--html f]
 caseflow eval <case> ["your decision"]     # decide → write back → bank knowledge, one action
 caseflow recall "query"          # ask everything you've decided before
-caseflow agent ["question"]      # ops copilot: health, runs, failure triage (interactive without args)
 
 # measure
 caseflow eval --handler <h>      # blind-replay banked cases; per-field scores
@@ -77,8 +77,11 @@ claude mcp add caseflow -- caseflow mcp
 
 ## What the platform guarantees
 
-- **Never calls model APIs, never holds credentials** — the agent runner and
-  fetch scripts run under your logins; config names a model, never a key.
+- **Never calls model APIs, never holds credentials** — your agents and
+  fetch scripts run under your logins; config names commands, never a key.
+- **Every execution is recorded** — each stage attempt leaves a log (command,
+  timing, exit, full output) in the case's workspace, promoted into the
+  knowledge package's evidence at eval.
 - **Deterministic routing** — a config table, never an AI orchestrator.
 - **Humans hold the gate** — nothing writes back until a case is evaluated;
   every write leaves a receipt; failures retry surgically.
