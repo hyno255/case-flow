@@ -11,11 +11,25 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .agents import CHECKER, DEFAULT_AGENT, Verdict, file_tools, person_tool, run_agent, plugin_tool
-from .graph import END, Graph, stage_by
-from .harness import CliStopped, cli_note, run_cli, tool_commands
-from .layout import ATTEMPTS, NEEDS_PERSON, VERDICTS, asked_file, cli_file, prompt_file, verdict_file, visible_files
-from .procs import DONE_EARLY, STOPPED, run_proc
+from agentflow.workers.agents import CHECKER, DEFAULT_AGENT, Verdict, file_tools, person_tool, run_agent, plugin_tool
+from agentflow.plugins.graph import END, Graph, stage_by
+from agentflow.workers.harness import CliStopped, cli_note, run_cli, tool_commands
+from agentflow.records.layout import ATTEMPTS, NEEDS_PERSON, VERDICTS, asked_file, cli_file, prompt_file, verdict_file, visible_files
+from agentflow.workers.procs import DONE_EARLY, STOPPED, run_proc
+
+
+def run_told(settings, flow_dir: Path, flow: str, run_id: str, output: Path, trial: bool) -> dict:
+    """What every script of a run is told: the engine's home, the flow and where its files are, the run, where the run's
+    output goes, and whether this is a trial."""
+    return {"AGENTFLOW_HOME": str(settings.home), "AGENTFLOW_FLOW": flow, "AGENTFLOW_FLOW_DIR": str(flow_dir.resolve()), "AGENTFLOW_RUN": run_id,
+            "AGENTFLOW_OUTPUT": str(output.resolve()), **({"AGENTFLOW_TRIAL": "1"} if trial else {})}
+
+
+async def run_script(settings, store, run_id: str, file: Path, cwd: Path, stdin: str, env: dict, limits: dict) -> tuple[int, str, float]:
+    """Run one of a flow's own scripts: (exit code, output, seconds). A cancelled run stops it."""
+    began = time.time()
+    code, out = await run_proc([str(file.resolve())], cwd, stdin, env, stop=lambda: store.cancel_requested(run_id), **settings.proc(limits))
+    return code, out, round(time.time() - began, 3)
 
 
 @dataclass
@@ -29,10 +43,10 @@ class Ctx:
     work: Path
     trial: bool
     limits: dict
-    graph: Graph | None = None  # the flow compiled; made from the registry when not given
+    graph: Graph  # the flow compiled
+    output: Path  # the run's output folder, which the flow's scripts may write
 
     def __post_init__(self):
-        self.graph = self.graph or self.registry.graph(self.flow)
         for part in (ATTEMPTS, VERDICTS):  # the engine's folders exist before a script runs, so no script can make them its own
             (self.work / part).mkdir(parents=True, exist_ok=True)
 
@@ -45,25 +59,22 @@ class Ctx:
         return self.registry.dir("flows", self.flow)
 
     def told(self) -> dict:
-        """What every script, and a CLI doing a stage, is told: where the flow's files are, which item, whether this is a trial."""
-        return {"AGENTFLOW_FLOW_DIR": str(self.flow_dir.resolve()), "AGENTFLOW_ITEM_ID": self.item_id, **({"AGENTFLOW_TRIAL": "1"} if self.trial else {})}
-
-    def env(self, plugin: str) -> dict:
-        """What a script is told, and only the secrets its plugin was granted. A trial withholds granted secrets."""
-        return {**self.told(), **({} if self.trial else self.settings.secrets_for(plugin))}
+        """What every script of an item, and a CLI doing a stage, is told: what the run's scripts are told, and which item."""
+        return {**run_told(self.settings, self.flow_dir, self.flow, self.run_id, self.output, self.trial), "AGENTFLOW_ITEM_ID": self.item_id}
 
     def cancelled(self) -> bool:
         return self.store.cancel_requested(self.run_id)
 
     async def script(self, name: str, stdin: str) -> tuple[int, str, float]:
-        """Run one of the flow's own scripts for this item: (exit code, output, seconds). A cancelled run stops it."""
-        plugin, began = f"flows/{self.flow}", time.time()
-        code, out = await run_proc([str((self.flow_dir / name).resolve())], self.work, stdin, self.env(plugin), stop=self.cancelled,
-                                   **self.settings.proc(self.limits))
-        return code, out, round(time.time() - began, 3)
+        """Run one of the flow's own scripts for this item, in its work folder."""
+        return await run_script(self.settings, self.store, self.run_id, self.flow_dir / name, self.work, stdin, self.told(), self.limits)
+
+    def stand_in(self) -> Path | None:
+        """The flow's stand-in script, which answers in the model's place when the engine runs on the stand-in."""
+        return self.flow_dir / self.registry.flow(self.flow)["stand_in"] if self.settings.stand_in else None
 
     def tool(self, name: str):
-        return plugin_tool(self.settings, self.registry, name, self.work, self.env(f"tools/{name}"), self.limits)
+        return plugin_tool(self.settings, self.registry, name, self.work, self.told(), self.limits)
 
     def emit(self, stage: str | None, type_: str, **data) -> None:
         self.store.emit(self.run_id, self.item_id, stage, type_, folder=self.work, **data)
@@ -161,16 +172,16 @@ async def _by_agent(ctx: Ctx, stage: dict, n: int, attempt: int, feedback: list[
             (ctx.work / NEEDS_PERSON).unlink(missing_ok=True)  # one left by a try that was cut short is not this try's
             _, stats = await run_cli(ctx.settings, ctx.settings.model(model), f"{instructions}\n\n{cli_note(commands)}", prompt, ctx.work,
                                      ctx.work / cli_file(sid, n, harness, "jsonl"), ctx.work / cli_file(sid, n, harness, "md"), ctx.told(), ctx.limits,
-                                     [program for _, _, program, _ in commands], stop=ctx.cancelled, on_event=report)
+                                     [program for _, _, program, _ in commands], stop=ctx.cancelled, on_event=report, stand_in=ctx.stand_in())
             asked += _asked_in_file(ctx, sid, n)
         else:
             tools = file_tools(ctx.work, True, ctx.limits) + [ctx.tool(t) for t in names] + [person_tool(asked)]
-            _, stats = await run_agent(ctx.settings, instructions, prompt, tools, model=model, limits=ctx.limits, on_event=report)
+            _, stats = await run_agent(ctx.settings, instructions, prompt, tools, model=model, limits=ctx.limits, on_event=report, stand_in=ctx.stand_in())
     except CliStopped:
         ctx.store.end_attempt(attempt, "cancelled")
         ctx.emit(sid, "attempt_cancelled", n=n, script=f"the {harness} CLI")
         return "cancelled", f"the run was cancelled while the {harness} CLI was working on {sid}; it was stopped"
-    except Exception as e:  # a model, network or CLI error: the item fails and the next run takes it again
+    except Exception as e:  # a model, network or CLI error: the item fails
         ctx.store.end_attempt(attempt, "error")
         ctx.emit(sid, "attempt_ended", n=n, error=str(e)[:ctx.limits["error_chars"]])
         return "failed", f"{by} could not finish {sid}: {type(e).__name__}: {str(e)[:ctx.limits['error_chars']]}"
@@ -210,7 +221,7 @@ async def _validate(ctx: Ctx, stage: dict, n: int, attempt: int) -> tuple[list[d
         ask = (f"Stage '{sid}' for item {ctx.item_id}. Done when: {stage.get('done_when', 'your method is satisfied')}\n"
                f"The work folder holds: {', '.join(visible_files(ctx.work))}.")
         try:
-            v, stats = await run_agent(ctx.settings, instructions, ask, file_tools(ctx.work, False, ctx.limits) + extra, output_type=Verdict, limits=ctx.limits,
+            v, stats = await run_agent(ctx.settings, instructions, ask, file_tools(ctx.work, False, ctx.limits) + extra, output_type=Verdict, limits=ctx.limits, stand_in=ctx.stand_in(),
                                        model=ctx.registry.model_for(ctx.flow, {}, stage.get("review")),  # the reviewer's own model, else the flow's
                                        on_event=lambda t, **d: ctx.emit(sid, t, n=n, agent=who, role="reviewer", **d))
             record({"by": who, "passed": v.passed, "reason": v.reason, "needs_person": v.needs_person, **stats})
@@ -265,7 +276,7 @@ async def run_stage(ctx: Ctx, stage: dict) -> tuple[str, str]:
 
 
 async def run_item(ctx: Ctx, start_at: str | None = None) -> tuple[str, str]:
-    """One item along the flow's graph, from `start_at` if given (a resume or a retry), else from the first stage.
+    """One item along the flow's graph, from `start_at` if given (a resume), else from the first stage.
     Returns (ending, reason); the ending is one of ENDINGS."""
     if start_at is None:
         ctx.emit(None, "item_started")

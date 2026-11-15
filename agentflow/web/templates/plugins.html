@@ -3,7 +3,7 @@
 {% import "_ui.html" as ui %}
 {% block title %}{{ v.kind | capitalize }} · agentflow{% endblock %}
 {% block heading %}{{ v.kind | capitalize }}{% endblock %}
-{% block actions %}{{ ui.path(v.folder) }}{% if v.kind == "tools" and v.rows %} <button type="button" data-post="/api/tools/health" title="run every tool's health check now">Check all</button>{% endif %}{% endblock %}
+{% block actions %}{% if v.kind == "tools" and v.rows %} <button type="button" data-post="/api/tools/health" title="run every tool's health check now">Check all</button>{% endif %}{% endblock %}
 {% block main %}
 <div class="scroll">
   <table>

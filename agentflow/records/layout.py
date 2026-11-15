@@ -9,7 +9,7 @@
             attempts/             what each try was told, and what a CLI that did the try printed
             verdicts/             what each validation said
             ...                   the files the stages wrote
-        report/                   the rendered report: the run's output
+        output/                   what the flow puts out for this run: its scripts write here, the engine only serves it
 
 The store keeps folders relative to the data folder, so the data folder can be moved.
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 
 DB = Path("db") / "agentflow.db"
 RUNS, FETCHES = "runs", "fetches"
-PLUGINS, ITEMS, REPORT = "plugins", "items", "report"                     # inside a run folder
+PLUGINS, ITEMS, OUTPUT = "plugins", "items", "output"                     # inside a run folder
 EVENTS, ATTEMPTS, VERDICTS = "events.jsonl", "attempts", "verdicts"            # inside an item's folder
 ENGINE_OWNED = (EVENTS, VERDICTS, ATTEMPTS)                                   # not writable by agents or scripts
 NEEDS_PERSON = "needs-person.md"  # a CLI doing a stage writes this in the item's folder to set the item aside for a person

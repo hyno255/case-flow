@@ -6,11 +6,10 @@
 {# A run that can still change follows the event stream. On the Log tab the log's own stream does that. #}
 {% block live %} data-seq="{{ v.seq }}"{% if v.live and v.tab != "log" %} data-events="/api/events?run={{ v.id }}&after={{ v.seq }}"{% endif %}{% endblock %}
 {% block crumbs %}<a href="/">Runs</a>{% endblock %}
-{% block heading %}{{ v.id }} {{ ui.pill(v.status, v.pill) }}{% if v.trial %} {{ ui.pill("trial", "wait", "one item, to try the flow; it does not count as done") }}{% endif %}{% endblock %}
+{% block heading %}{{ v.id }} {{ ui.pill(v.status, v.pill) }}{% if v.trial %} {{ ui.pill("trial", "wait", "one item, to try the flow") }}{% endif %}{% endblock %}
 {% block actions %}
 {% if v.can_resume %}<button type="button" class="primary" data-post="/api/runs/{{ v.id }}/resume" data-confirm="Resume {{ v.id }}?">Resume</button>{% endif %}
 {% if v.can_cancel %}<button type="button" data-post="/api/runs/{{ v.id }}/cancel" data-confirm="Cancel {{ v.id }}?">Cancel</button>{% endif %}
-{% if v.report %}<a class="button" href="{{ v.report }}" target="_blank" rel="noopener">Open report</a>{% endif %}
 {% endblock %}
 {% block head %}
 {% if v.error %}<p class="alert bad">{{ v.error }}</p>{% endif %}
@@ -22,47 +21,46 @@
   <div><dt>Cost</dt><dd>{{ ui.cost(v.cost) }} <small title="the run stops starting tries at this cost">of {{ v.cap }}</small></dd></div>
   <div><dt>Duration</dt><dd>{{ v.time }}</dd></div>
   <div><dt>Plugins</dt><dd><code title="hash of the plugin files this run used">{{ v.snapshot }}</code></dd></div>
-  {% if v.retry_of %}<div><dt>Retry of</dt><dd><a href="/runs/{{ v.retry_of }}/items/{{ v.retry_item }}">{{ v.retry_of }} · {{ v.retry_item }}</a> <small>from {{ v.from_stage }}</small></dd></div>{% endif %}
-  <div class="wide"><dt>Run folder</dt><dd>{{ ui.path(v.folder) }}</dd></div>
 </dl>
 {% endblock %}
-{% block tabs %}{{ ui.tabs("/runs/" ~ v.id, ["items", "trace", "log", "flow"], v.tab) }}{% endblock %}
+{% block tabs %}{{ ui.tabs("/runs/" ~ v.id, ["items", "output", "trace", "log", "flow"], v.tab) }}{% endblock %}
 {% block main %}
 {% if v.tab == "items" %}
 <div class="scroll">
   <table>
-    <thead><tr><th>Item</th><th>About</th><th>Status</th><th>Stage</th><th>Reason</th><th class="r">Tokens</th><th class="r">Cost</th><th class="r">Time</th><th>Output</th><th>Work folder</th></tr></thead>
+    <thead><tr><th>Item</th><th>About</th><th>Status</th><th>Stage</th><th>Reason</th><th class="r">Tokens</th><th class="r">Cost</th><th class="r">Time</th><th>Work folder</th></tr></thead>
     <tbody>
     {% for i in v["items"] %}
       <tr>
         <td class="name"><a href="/runs/{{ v.id }}/items/{{ i.id }}">{{ i.id }}</a></td>
         <td class="about">{{ i.title }}</td>
-        <td class="nw">{{ ui.pill(i.status, i.pill) }}{% if i.carried_from %} <a href="/runs/{{ i.carried_from }}/items/{{ i.id }}" title="the run that did the work">{{ i.carried_from }}</a>{% endif %}</td>
+        <td class="nw">{{ ui.pill(i.status, i.pill) }}</td>
         <td class="nw">{{ i.stage or "—" }}</td>
         <td class="reason">{{ i.reason }}</td>
         <td class="r">{{ i.tokens | num }}</td><td class="r">{{ ui.cost(i.cost) }}</td><td class="r">{{ i.time }}</td>
-        <td>{% if i.report %}<a href="{{ i.report }}" target="_blank" rel="noopener">report</a>{% else %}<span title="written when the run ends">—</span>{% endif %}</td>
         <td class="folder">{{ ui.path(i.folder, i.folder_short) }}</td>
       </tr>
     {% else %}
-      <tr><td colspan="10" class="none">No items.</td></tr>
+      <tr><td colspan="9" class="none">No items.</td></tr>
     {% endfor %}
     </tbody>
   </table>
 </div>
-{% if v.retries %}
-<section>
-  <h3>Retried</h3>
-  <div class="scroll">
-    <table>
-      <thead><tr><th>Item</th><th>From stage</th><th>New run</th></tr></thead>
-      <tbody>
-      {% for r in v.retries %}<tr><td class="name">{{ r.item }}</td><td>{{ r.from_stage }}</td><td><a href="/runs/{{ r.run }}/items/{{ r.item }}">{{ r.run }}</a></td></tr>{% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
-{% endif %}
+{% elif v.tab == "output" %}
+<p>{{ ui.path(v.output_folder) }}</p>
+<div class="scroll">
+  <table>
+    <thead><tr><th>File</th><th class="r">Bytes</th></tr></thead>
+    <tbody>
+    {% for f in v.files %}
+      <tr><td class="name"><a href="{{ f.href }}" target="_blank" rel="noopener">{{ f.path }}</a></td><td class="r">{{ f.size | num }}</td></tr>
+    {% else %}
+      <tr><td colspan="2" class="none">{% if v.finish %}Nothing yet. {{ v.finish }} runs when every item has ended.{% else %}Nothing. This flow has no finish script, and no stage script wrote here.{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if v.more %}<p class="none">And {{ v.more }} more in the folder.</p>{% endif %}
 {% elif v.tab == "trace" %}
 {{ trace.view(v.trace, v.span, ("run", "item")) }}
 {% elif v.tab == "flow" %}

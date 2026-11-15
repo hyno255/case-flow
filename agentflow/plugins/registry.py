@@ -20,15 +20,15 @@ from pathlib import Path
 
 import yaml
 
-from .graph import Graph, compile_flow, stage_by
-from .layout import PLUGINS
-from .schedule import parse_schedule
-from .settings import DEFAULTS, check_numbers
+from agentflow.plugins.graph import Graph, compile_flow, stage_by
+from agentflow.records.layout import PLUGINS
+from agentflow.engine.schedule import parse_schedule
+from agentflow.settings import check_numbers
 
 SOURCE_KEYS = {"description", "run", "output", "fields"}
 TOOL_KEYS = {"description", "run", "args", "health", "mcp"}
 AGENT_KEYS = {"description", "tools", "model"}
-FLOW_KEYS = {"source", "where", "schedule", "stages", "model", "limits"}
+FLOW_KEYS = {"source", "where", "schedule", "stages", "finish", "stand_in", "model", "limits"}
 OUTPUT_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.json")  # a source's output: one JSON file in the fetch's folder
 STAGE_KEYS = {"id", "run", "agent", "model", "check", "done_when", "review", "tries", "next", "on_fail"}
 STAGES = "stages"  # the folder of a flow that holds one file per stage
@@ -45,16 +45,9 @@ def installed(settings) -> "Registry":
 
 
 class Registry:
-    def __init__(self, root: Path, settings=None):
+    def __init__(self, root: Path, settings):
         self.root = Path(root)
-        self.settings = settings  # when given, model names are checked against it, and its limits apply
-
-    def limits_for(self, flow: dict) -> dict:
-        """The limits one flow runs under: the platform's (the packaged defaults when no settings were given), with the flow's own on top."""
-        if self.settings:
-            return self.settings.limits_for(flow)
-        own = flow.get("limits")
-        return {**DEFAULTS["limits"], **(own if isinstance(own, dict) else {})}
+        self.settings = settings  # model names are checked against it, and its limits apply
 
     def names(self, kind: str) -> list[str]:
         folder = self.root / kind
@@ -82,7 +75,7 @@ class Registry:
 
     def graph(self, name: str) -> Graph:
         f = self.flow(name)
-        return compile_flow(f, self.limits_for(f))[0]
+        return compile_flow(f, self.settings.limits_for(f))[0]
 
     def flow_goal(self, name: str) -> str:
         """What the flow is for: FLOW.md, which every agent in the flow is told."""
@@ -210,9 +203,12 @@ class Registry:
             except ValueError as e:
                 errs.append(str(e))
         errs += check_numbers("limits", f.get("limits") or {})
+        for key in ("finish", "stand_in"):
+            if key in f and not (d / str(f[key])).is_file():
+                errs.append(f"{key} script {f[key]} not found")
         if not (d / "FLOW.md").is_file():
             errs.append("FLOW.md not found")
-        graph, graph_errs = compile_flow(f, self.limits_for(f))  # ids, next, on_fail, tries: the flow as a graph
+        graph, graph_errs = compile_flow(f, self.settings.limits_for(f))  # ids, next, on_fail, tries: the flow as a graph
         errs += graph_errs
         for sid, s in graph.stages.items():
             errs += [f"stage {sid}: unknown key '{k}'" for k in s if k not in STAGE_KEYS]
@@ -230,10 +226,9 @@ class Registry:
                     errs += [f"stage {sid}: {key} {s[key]}: {e}" for e in self.check_agent(s[key])]
             if stage_by(s) == "default agent" and not self.stage_method(name, sid):
                 errs.append(f"stage {sid}: the default agent does this stage, but {STAGES}/{sid}.md is missing or empty")
-        if self.settings is not None:
-            for where, spec in self.flow_models(name):
-                errs += self.settings.check_model(spec, where)
-        if self.settings is not None and not errs:  # the flow reads well: what a stage handed to a CLI cannot have
+        for where, spec in self.flow_models(name):
+            errs += self.settings.check_model(spec, where)
+        if not errs:  # the flow reads well: what a stage handed to a CLI cannot have
             on_cli = self.settings.harness_of
             if "model" in f and on_cli(f["model"]):
                 errs.append(f"model: the flow's model also runs its reviewers, which stay in the engine; name the {on_cli(f['model'])} model on a stage or an agent")
@@ -244,8 +239,6 @@ class Registry:
                 for t in (self.agent(s["agent"])[0].get("tools") or []) if harness and "agent" in s else []:
                     if "mcp" in self.tool(t):
                         errs.append(f"stage {sid}: its work goes to the {harness} CLI, which cannot use the tool {t}: it is an MCP server, not a command")
-                    elif self.settings.granted(f"tools/{t}"):
-                        errs.append(f"stage {sid}: its work goes to the {harness} CLI, which is not given the secrets the tool {t} was granted")
         return errs
 
     def check_all(self) -> list[tuple[str, str, list[str], str]]:

@@ -1,5 +1,5 @@
 // The server renders the pages. This script keeps a page of a run that is still going up to date from the event
-// stream, builds the log from that stream, and handles the few things a click does: select, copy, post.
+// stream, builds the log from that stream, and handles the few things a click does: select, post.
 (function () {
   "use strict";
   var part = document.getElementById("live-part");  // everything but the sidebar; the server can render it alone
@@ -75,9 +75,8 @@
       case "run_resumed": return ["head", "run resumed"];
       case "run_interrupted": return ["fail", "run interrupted: " + e.reason];
       case "cancel_requested": return ["fail", "cancel asked for"];
-      case "report_rendered": return ["dim", "report written · " + e.total + (e.total === 1 ? " item" : " items")];
+      case "finish_ended": return e.exit_code ? ["fail", "finish script " + e.script + " failed with exit code " + e.exit_code + took(e)] : ["dim", "finish script " + e.script + " ended" + took(e)];
       case "item_started": return ["head", e.from_stage ? "continues at " + e.from_stage : "started"];
-      case "item_carried_over": return ["dim", "carried over from " + e.from_run];
       case "item_ended": return ["head", "ended: " + String(e.ended_as).replace(/_/g, " ") + (e.reason ? " · " + e.reason : "")];
       case "attempt_started": return ["head", "try " + e.n + (e.model ? " · " + e.model : "") + (e.feedback ? " · told the earlier reasons" : "")];
       case "attempt_cancelled": return ["fail", "try " + e.n + " cancelled: the script was stopped"];
@@ -86,6 +85,7 @@
       case "tool_result": return ["dim", "  " + e.tool + " answered · " + e.chars + " characters" + took(e) + (e.preview ? " · " + String(e.preview).slice(0, LINE) : "")];
       case "model_call": return ["dim", "model call" + (e.model ? " · " + e.model : "") + " · " + e.tokens_in + " in, " + e.tokens_out + " out" + took(e) +
                                  (e.cost_usd == null ? " · cost not recorded" : e.cost_usd === 0 ? " · free" : " · $" + e.cost_usd.toFixed(5) + " estimated")];
+      case "cli_run": return ["dim", "the " + e.harness + " CLI ended" + took(e)];
       case "attempt_ended": return ["dim", e.error ? "try failed: " + e.error
                                  : e.exit_code != null ? "exit code " + e.exit_code + took(e) + (e.output ? " · " + String(e.output).slice(-LINE) : "")
                                  : "try ended · " + e.model_calls + " model calls · " + e.tool_calls + " tool calls · " + (e.tokens_in + e.tokens_out) + " tokens" + took(e)];
@@ -163,16 +163,6 @@
       return;
     }
 
-    // ---- copy a path ----
-    var copy = ev.target.closest("button[data-copy]");
-    if (copy && navigator.clipboard) {
-      navigator.clipboard.writeText(copy.dataset.copy).then(function () {
-        copy.textContent = "copied";
-        setTimeout(function () { copy.textContent = "copy"; }, 1200);
-      });
-      return;
-    }
-
     // ---- buttons that change something: one POST, with the header the server asks for ----
     var b = ev.target.closest("button[data-post]");
     if (!b) return;
@@ -184,7 +174,7 @@
           var answer = {};
           try { answer = JSON.parse(t); } catch (e) { answer = { detail: t }; }
           if (!r.ok) window.alert("That did not work: " + (answer.detail || t));
-          else if (answer.go) window.location.href = answer.go;  // for example, the new run a retry created
+          else if (answer.go) window.location.href = answer.go;
         });
       })
       .catch(function () { window.alert("The server could not be reached."); })

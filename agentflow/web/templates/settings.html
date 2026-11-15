@@ -2,7 +2,6 @@
 {% import "_ui.html" as ui %}
 {% block title %}Settings · agentflow{% endblock %}
 {% block heading %}Settings {{ ui.pill("read only", "wait", "edit agentflow.yaml and start the server again") }}{% endblock %}
-{% block actions %}{{ ui.path(v.file) }}{% endblock %}
 {% block main %}
 {{ ui.errors(v.errors) }}
 <section>
@@ -32,25 +31,10 @@
   <section class="card">
     <h2>Folders</h2>
     <table class="kv">
+      <tr><th>settings file</th><td>{{ ui.path(v.file) }}</td></tr>
       <tr><th>plugins</th><td>{{ ui.path(v.plugins) }}</td></tr>
       <tr><th>data</th><td>{{ ui.path(v.data) }}</td></tr>
     </table>
   </section>
 </div>
-<section>
-  <h3>Grants</h3>
-  <div class="scroll">
-    <table>
-      <thead><tr><th>Plugin</th><th>Secrets its scripts see</th></tr></thead>
-      <tbody>
-      {% for g in v.grants %}
-        <tr><td class="name">{% if g.href %}<a href="{{ g.href }}">{{ g.plugin }}</a>{% else %}{{ g.plugin }}{% endif %}</td>
-            <td>{{ ui.secrets(g.secrets) }}</td></tr>
-      {% else %}
-        <tr><td colspan="2" class="none">No grants.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
 {% endblock %}

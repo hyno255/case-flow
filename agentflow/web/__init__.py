@@ -9,7 +9,6 @@ change (starting a flow, switching a schedule, checking a tool) only with a head
 """
 import asyncio
 import json
-import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,21 +19,16 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from ..agents import ModelNotReady
-from ..health import check_tools
-from ..layout import REPORT, confined
-from ..plugins import installed
-from ..recovery import claim_resume, prepare_retry, request_cancel, resume_run, run_retry, sweep
-from ..runner import checked, run_due, start_flow
-from ..schedule import set_schedule, tick
+from agentflow.plugins.health import check_tools
+from agentflow.records.layout import OUTPUT, confined
+from agentflow.plugins.registry import installed
+from agentflow.engine.recovery import claim_resume, request_cancel, resume_run, sweep
+from agentflow.engine.runner import checked, run_due, start_flow
+from agentflow.engine.schedule import set_schedule, tick
 from . import catalog, views
 
 HERE = Path(__file__).parent
-REPORT_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.html")
-
-
-class RunRequest(BaseModel):
-    force: bool = False
+SANDBOX = {"Content-Security-Policy": "sandbox allow-scripts allow-popups"}  # a flow's page is not the engine's: it cannot act as this site
 
 
 class ScheduleRequest(BaseModel):
@@ -131,15 +125,19 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
             return JSONResponse(v)
         return pages.TemplateResponse(request, template, {"v": v, "nav": views.nav(settings, store, section), "fragment": "fragment" in request.query_params})
 
-    def plain_file(folder: Path, path: str) -> PlainTextResponse:
-        """One file of a folder, always as plain text, never run as a page."""
+    def inside(folder: Path, path: str) -> Path:
+        """A file of a folder, or the error that answers the request."""
         try:
             target = confined(folder, path)
         except ValueError as e:
             raise HTTPException(400, str(e))
         if not target.is_file():
             raise HTTPException(404, "no such file")
-        return PlainTextResponse(target.read_text(errors="replace")[:settings.show["raw_chars"]])
+        return target
+
+    def plain_file(folder: Path, path: str) -> PlainTextResponse:
+        """One file of a folder, always as plain text, never run as a page."""
+        return PlainTextResponse(inside(folder, path).read_text(errors="replace")[:settings.show["raw_chars"]])
 
     # ---- runs: the list, a run and its tabs, an item and its tabs ----
     @app.get("/", response_class=HTMLResponse)
@@ -157,19 +155,17 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
 
     @both("/runs/{run_id}/items/{item_id}")
     @both("/runs/{run_id}/items/{item_id}/{tab}")
-    async def item_page(request: Request, run_id: str, item_id: str, tab: str = "output", span: str = "", file: str = ""):
+    async def item_page(request: Request, run_id: str, item_id: str, tab: str = "files", span: str = "", file: str = ""):
         return show(request, "item.html", "runs", views.item_view(settings, store, run_id, item_id, tab, span, file))
 
     @app.get("/runs/{run_id}/items/{item_id}/files/{path:path}", response_class=PlainTextResponse)
     async def item_file(run_id: str, item_id: str, path: str):
-        return plain_file(store.path(found(store.item(run_id, item_id))), path)  # a carried-over item's row names the folder that holds its work
+        return plain_file(store.path(found(store.item(run_id, item_id))), path)
 
-    @app.get("/runs/{run_id}/report/{name}")
-    async def report_file(run_id: str, name: str):
-        target = store.path(found(store.run(run_id))) / REPORT / name
-        if not REPORT_FILE.fullmatch(name) or not target.is_file():
-            raise HTTPException(404, "no such report page")
-        return FileResponse(target, media_type="text/html")
+    @app.get("/runs/{run_id}/output/{path:path}")
+    async def output_file(run_id: str, path: str):
+        """A file the flow put in the run's output folder, served as it is."""
+        return FileResponse(inside(store.path(found(store.run(run_id))) / OUTPUT, path), headers=SANDBOX)
 
     # ---- design: what is installed, one list and one page with tabs per kind of plugin ----
     def plugin_rows(kind: str) -> list[dict]:
@@ -191,7 +187,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
     def plugin_pages(kind: str) -> None:
         @app.get(f"/{kind}", response_class=HTMLResponse)
         async def list_page(request: Request):
-            return show(request, "plugins.html", kind, {"kind": kind, "rows": plugin_rows(kind), "folder": str(settings.plugins / kind)})
+            return show(request, "plugins.html", kind, {"kind": kind, "rows": plugin_rows(kind)})
 
         @app.get(f"/api/{kind}")
         async def list_api():
@@ -222,7 +218,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
 
     # ---- changes: each needs the header, see above ----
     @app.post("/api/flows/{flow}/run", status_code=202)
-    async def api_run_flow(flow: str, body: RunRequest):
+    async def api_run_flow(flow: str):
         """Start one flow: its source is fetched now, and this flow alone runs over what came back."""
         live = installed(settings)
         if flow not in live.names("flows"):
@@ -231,8 +227,8 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
             checked(live, flow)
         except ValueError as e:
             raise HTTPException(400, str(e))
-        spawn([f"flows/{flow}"], start_flow(settings, store, flow, force=body.force))
-        return {"started": flow, "force": body.force, "go": f"/flows/{flow}/runs"}
+        spawn([f"flows/{flow}"], start_flow(settings, store, flow))
+        return {"started": flow, "go": f"/flows/{flow}/runs"}
 
     @app.post("/api/runs/{run_id}/resume", status_code=202)
     async def api_resume(run_id: str):
@@ -249,15 +245,6 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
             return {"run": run_id, "result": request_cancel(store, run_id, stale)}
         except ValueError as e:
             raise HTTPException(409, str(e))
-
-    @app.post("/api/runs/{run_id}/items/{item_id}/retry", status_code=202)
-    async def api_retry(run_id: str, item_id: str):
-        try:
-            new = prepare_retry(settings, store, run_id, item_id)
-        except (ValueError, ModelNotReady) as e:
-            raise HTTPException(400, str(e))
-        spawn([new], run_retry(settings, store, new))
-        return {"run": new, "go": f"/runs/{new}/items/{item_id}"}
 
     @app.post("/api/flows/{flow}/schedule")
     async def api_schedule(flow: str, body: ScheduleRequest):

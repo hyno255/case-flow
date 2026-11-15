@@ -19,18 +19,19 @@ from unittest import mock
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
-from agentflow.agents import ModelNotReady, build_model, file_tools, run_agent
+from agentflow.workers.agents import ModelNotReady, build_model, file_tools, run_agent
 from agentflow.cli import main
-from agentflow.graph import compile_flow
-from agentflow.health import tool_health
-from agentflow.layout import confined
-from agentflow.plugins import Registry, installed
-from agentflow.procs import DONE_EARLY, STOPPED, TIMED_OUT, run_proc
-from agentflow.render import md_to_html
-from agentflow.runner import FetchFailed, run_due, start_flow, try_flow
-from agentflow.schedule import next_due, parse_schedule, set_schedule, tick
+from agentflow.plugins.graph import compile_flow
+from agentflow.records.history import earlier, earlier_file
+from agentflow.plugins.health import tool_health
+from agentflow.records.layout import confined
+from agentflow.plugins.registry import Registry, installed
+from agentflow.workers.procs import DONE_EARLY, STOPPED, TIMED_OUT, run_proc
+from agentflow.engine.runner import FetchFailed, run_due, start_flow, try_flow
+from agentflow.engine.schedule import next_due, parse_schedule, set_schedule, tick
 from agentflow.settings import DEFAULTS, Settings
-from agentflow.stages import Ctx, decide
+from agentflow.engine.stages import Ctx, decide
+from agentflow.web import show
 from support import ROOT, Home
 
 
@@ -82,8 +83,8 @@ class Pure(unittest.TestCase):
         self.assertEqual(next_due("daily 07:00", friday_8), datetime(2026, 11, 14, 7, 0))
         self.assertEqual(next_due("daily 09:00", friday_8), datetime(2026, 11, 13, 9, 0))
 
-    def test_report_html_is_inert(self):
-        out = md_to_html("# T\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1)) [y](https://example.com)")
+    def test_a_plugin_markdown_file_is_shown_inert(self):
+        out = show.md_to_html("# T\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1)) [y](https://example.com)")
         self.assertNotIn("<script>", out)
         self.assertNotIn("javascript:", out)
         self.assertIn('href="https://example.com"', out)
@@ -95,9 +96,9 @@ class EndToEnd(Home):
             self.assertEqual(errs, [], f"{kind}/{name}")
         flow = self.settings.plugins / "flows/vuln-triage/flow.yaml"
         flow.write_text(flow.read_text() + "retries: 3\n")
-        self.assertIn("unknown key 'retries'", Registry(self.settings.plugins).check_flow("vuln-triage"))
+        self.assertIn("unknown key 'retries'", installed(self.settings).check_flow("vuln-triage"))
 
-    def test_full_run_then_carry_over(self):
+    def test_a_full_run_and_then_another(self):
         run_id = asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))  # a person starts a flow; its source is fetched for it
         items = self.items(run_id)
         self.assertEqual({k: v["ended_as"] for k, v in items.items()},
@@ -129,36 +130,49 @@ class EndToEnd(Home):
         self.assertGreater(usage["tokens"], 0)
         self.assertEqual((usage["cost_known"], usage["cost_usd"]), (True, 0))
 
-        # the report in the run folder is the run's output; the engine sends nothing anywhere after it
+        # what a run puts out is the flow's own: its finish script ran once, in the run's output folder, and wrote the report there
         run = self.store.one("SELECT * FROM runs WHERE id = ?", run_id)
-        index = (self.store.path(run) / "report/index.html").read_text()
-        self.assertIn("2 triaged, 2 need a person", index)
-        self.assertEqual([e["type"] for e in self.store.events(run_id) if e["item"] is None], ["run_started", "report_rendered", "run_ended"])
+        out = self.store.path(run) / "output"
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["SEC-1042.html", "SEC-1043.html", "SEC-1044.html", "SEC-1045.html", "index.html"])
+        self.assertIn("4 tickets: 2 triaged, 2 needs a person", (out / "index.html").read_text())
+        self.assertIn("Raise acme-http", (out / "SEC-1042.html").read_text())
+        ended = [e for e in self.store.events(run_id) if e["item"] is None]
+        self.assertEqual([e["type"] for e in ended], ["run_started", "finish_ended", "run_ended"])
+        self.assertEqual((ended[1]["script"], ended[1]["exit_code"]), ("scripts/report.py", 0))
         self.assertEqual((run["source"], self.store.one("SELECT COUNT(*) n FROM fetches WHERE id = ? AND outcome = 'ok'", run["fetch_id"])["n"]), ("security-tickets", 1))
         # everything the run wrote is in its own folder; the data folder holds only the database, the fetches and the runs
-        self.assertEqual(sorted(p.name for p in self.store.path(run).iterdir()), ["items", "plugins", "report"])
+        self.assertEqual(sorted(p.name for p in self.store.path(run).iterdir()), ["items", "output", "plugins"])
         self.assertEqual(sorted(p.name for p in (self.store.path(run) / "items").iterdir()), ["SEC-1042", "SEC-1043", "SEC-1044", "SEC-1045"])
         self.assertEqual(sorted(p.name for p in self.settings.data.iterdir()), ["db", "fetches", "runs"])
         self.assertEqual(sorted(p.name for p in self.home.iterdir()), ["agentflow.yaml", "data", "plugins"])
         self.assertFalse(Path(run["folder"]).is_absolute())  # stored relative, so the data folder can be moved
 
-        # second run, this time from the flow's schedule: nothing changed, so nothing is triaged again and no model is called
+        # a run is just a run. The next one, here from the flow's schedule, works every item the flow accepts again,
+        # in its own folder; leaving an item out is for the flow to do (what its source hands over, its `where`)
         (second,) = asyncio.run(run_due(self.settings, self.store, "security-tickets", ["vuln-triage"], "2026-11-16T07:00:00"))
-        self.assertEqual({v["ended_as"] for v in self.items(second).values()}, {"carried_over"})
-        self.assertEqual(self.store.one("SELECT COUNT(*) n FROM attempts WHERE run_id = ?", second)["n"], 0)
-        self.assertIn("4 carried over", (self.store.path(self.store.one("SELECT folder FROM runs WHERE id = ?", second)) / "report/index.html").read_text())
+        again = self.items(second)
+        self.assertEqual({k: v["ended_as"] for k, v in again.items()}, {k: v["ended_as"] for k, v in items.items()})
+        self.assertEqual(self.store.one("SELECT COUNT(*) n FROM attempts WHERE run_id = ? AND item_id = 'SEC-1042' AND stage = 'analyse'", second)["n"], 2)
+        self.assertNotEqual(self.store.path(again["SEC-1042"]), work)
+        self.assertIn("2 triaged, 2 needs a person", (self.store.path(self.store.one("SELECT folder FROM runs WHERE id = ?", second)) / "output/index.html").read_text())
 
-        # a changed ticket is triaged again; the others are still carried over
-        tickets = self.home / "plugins/sources/security-tickets/fixtures/tickets.json"
-        data = json.loads(tickets.read_text())
-        data[0]["severity"] = "critical"
-        tickets.write_text(json.dumps(data))
-        third = asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))
-        self.assertEqual({k: v["ended_as"] for k, v in self.items(third).items()},
-                         {"SEC-1042": "done", "SEC-1043": "carried_over", "SEC-1044": "carried_over", "SEC-1045": "carried_over"})
-        # "run all again" works every item, also the unchanged ones
-        again = asyncio.run(start_flow(self.settings, self.store, "vuln-triage", force=True))
-        self.assertNotIn("carried_over", {v["ended_as"] for v in self.items(again).values()})
+        # the engine does not look back, but a flow can: `agentflow history` is what its scripts call, and the asking run is left out
+        rows = earlier(self.store, "vuln-triage", "SEC-1044", self.settings.show["history_rows"], not_run=second)
+        self.assertEqual([(r["run"], r["ended_as"], r["trial"]) for r in rows], [(run_id, "needs_person", False)])
+        self.assertIn("no release or tag", rows[0]["reason"])
+        self.assertEqual((rows[0]["folder"], rows[0]["output"]), (str(self.store.path(items["SEC-1044"]).resolve()), str(out.resolve())))
+        self.assertIn("origin.md", rows[0]["files"])
+        self.assertEqual(len(earlier(self.store, "vuln-triage", None, self.settings.show["history_rows"])), 8)
+        self.assertIn("4.3.1", earlier_file(self.store, run_id, "SEC-1042", "fix.md", self.settings.limits["read_chars"]))
+        with self.assertRaisesRegex(ValueError, "inside the work folder"):
+            earlier_file(self.store, run_id, "SEC-1042", "../SEC-1043/fix.md", 100)
+        # a script of the flow reaches the command by name, and is told its flow and its run
+        script = self.home / "ask.sh"
+        script.write_text('#!/bin/sh\nagentflow history --item SEC-1042\n')
+        script.chmod(0o755)
+        told = {"AGENTFLOW_HOME": str(self.home), "AGENTFLOW_FLOW": "vuln-triage", "AGENTFLOW_RUN": second}
+        code, said = asyncio.run(run_proc([str(script)], self.home, env=told, **self.settings.proc()))
+        self.assertEqual((code, [r["run"] for r in json.loads(said)]), (0, [run_id]))
         # a flow that does not pass its checks is not started
         (self.home / "plugins/flows/vuln-triage/flow.yaml").write_text("source: security-tickets\nstages: []\nsurprise: 1\n")
         with self.assertRaisesRegex(ValueError, "unknown key 'surprise'"):
@@ -171,7 +185,7 @@ class EndToEnd(Home):
         # two flows accept the same source and come due in the same slot: one fetch, kept in its own folder, and one run each
         shutil.copytree(flows / "vuln-triage", flows / "high-only")
         (flows / "high-only/flow.yaml").write_text(written.replace("source: security-tickets\n", "source: security-tickets\nwhere: {severity: high}\n"))
-        self.assertEqual(Registry(self.settings.plugins).check_flow("high-only"), [])
+        self.assertEqual(installed(self.settings).check_flow("high-only"), [])
         all_of_them, high = asyncio.run(run_due(self.settings, self.store, "security-tickets", ["vuln-triage", "high-only"], "2026-11-16T07:00:00"))
         (fetch,) = self.store.q("SELECT * FROM fetches")
         self.assertEqual([i["id"] for i in json.loads((self.settings.data / fetch["folder"] / "tickets.json").read_text())], ["SEC-1042", "SEC-1043", "SEC-1044", "SEC-1045"])
@@ -195,23 +209,20 @@ class EndToEnd(Home):
         with self.assertRaisesRegex(FetchFailed, "did not write tickets.json"):
             asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))
         self.assertEqual([f["outcome"] for f in self.store.q("SELECT * FROM fetches ORDER BY id")], ["ok", "failed", "failed"])
-        self.assertEqual(Registry(self.settings.plugins).check_source("security-tickets"), [])
+        self.assertEqual(installed(self.settings).check_source("security-tickets"), [])
         (source / "source.yaml").write_text("run: ./fetch.sh\nsurprise: 1\n")
-        self.assertEqual(Registry(self.settings.plugins).check_source("security-tickets"), ["unknown key 'surprise'", "missing 'description'", "missing 'output'"])
+        self.assertEqual(installed(self.settings).check_source("security-tickets"), ["unknown key 'surprise'", "missing 'description'", "missing 'output'"])
 
-    def test_a_trial_does_not_count_as_done(self):
+    def test_a_trial_is_one_item_in_its_own_folder(self):
         run_id = asyncio.run(try_flow(self.settings, self.store, "vuln-triage", "SEC-1043"))
-        self.assertEqual(self.items(run_id)["SEC-1043"]["ended_as"], "done")
+        self.assertEqual({k: v["ended_as"] for k, v in self.items(run_id).items()}, {"SEC-1043": "done"})
         self.assertRegex(self.store.one("SELECT folder FROM runs WHERE id = ?", run_id)["folder"], r"^runs/\d{4}-\d\d-\d\d-t_")
-        # a trial is not a triage: the next run still does the item
-        real = asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))
-        self.assertEqual(self.items(real)["SEC-1043"]["ended_as"], "done")
 
     def test_plugin_edit_mid_run_uses_snapshot(self):
-        live = Registry(self.settings.plugins)
+        live = installed(self.settings)
         digest = live.snapshot("vuln-triage", self.home / "copy-1")
         (self.settings.plugins / "flows/vuln-triage/FLOW.md").write_text("# changed\n")
-        self.assertIn("Vulnerability triage", Registry(self.home / "copy-1").flow_goal("vuln-triage"))
+        self.assertIn("Vulnerability triage", Registry(self.home / "copy-1", self.settings).flow_goal("vuln-triage"))
         self.assertNotEqual(digest, live.snapshot("vuln-triage", self.home / "copy-2"))
 
     def test_cost_cap_stops_the_run(self):
@@ -265,14 +276,14 @@ class EndToEnd(Home):
         flow_dir = self.settings.plugins / "flows/vuln-triage"
         flow = flow_dir / "flow.yaml"
         flow.write_text(flow.read_text().replace("  - id: fix\n", "  - id: fix\n    review: origin-analyst\n"))
-        self.assertEqual(Registry(self.settings.plugins).check_flow("vuln-triage"), [])
+        self.assertEqual(installed(self.settings).check_flow("vuln-triage"), [])
         run_id = asyncio.run(try_flow(self.settings, self.store, "vuln-triage", "SEC-1042"))
         self.assertEqual(self.items(run_id)["SEC-1042"]["ended_as"], "done")
         by = [v["by"] for v in self.store.q("SELECT by FROM verdicts WHERE run_id = ? AND stage = 'fix'", run_id)]
         self.assertEqual(by, ["origin-analyst"])  # the named reviewer judged the stage, not the built-in checker
         # a reviewer may not be the agent that did the stage
         flow.write_text(flow.read_text().replace("    check: scripts/chain-cites-files.py\n", "    check: scripts/chain-cites-files.py\n    review: origin-analyst\n"))
-        self.assertTrue(any("reviewer cannot be" in e for e in Registry(self.settings.plugins).check_flow("vuln-triage")))
+        self.assertTrue(any("reviewer cannot be" in e for e in installed(self.settings).check_flow("vuln-triage")))
         flow.write_text(flow.read_text().replace("    check: scripts/chain-cites-files.py\n    review: origin-analyst\n", "    check: scripts/chain-cites-files.py\n"))
         # a stage script can end an item early with exit code 78; a failing script fails the item
         (flow_dir / "scripts/gather.sh").write_text("#!/bin/sh\necho not a security ticket\nexit 78\n")
@@ -382,22 +393,19 @@ class Scripts(Home):
         self.probe.chmod(0o755)
 
     def ctx(self, trial: bool = False) -> Ctx:
-        return Ctx(self.settings, self.store, self.registry, "vuln-triage", "r1", {"id": "SEC-1"}, self.work, trial, self.settings.limits)
+        return Ctx(self.settings, self.store, self.registry, "vuln-triage", "r1", {"id": "SEC-1"}, self.work, trial, self.settings.limits,
+                   self.registry.graph("vuln-triage"), self.home / "data/runs/r1/output")
 
     def run_probe(self, command: str, trial: bool = False, **how) -> tuple[int, str]:
-        return asyncio.run(run_proc([str(self.probe), command], self.work, env=self.ctx(trial).env("flows/vuln-triage"), **{**self.settings.proc(), **how}))
+        return asyncio.run(run_proc([str(self.probe), command], self.work, env=self.ctx(trial).told(), **{**self.settings.proc(), **how}))
 
-    def test_a_script_sees_only_the_secrets_its_plugin_was_granted(self):
-        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "sk-engine-only", "TRACKER_TOKEN": "granted-to-this-flow", "OTHER": "another-plugin's"}):
-            self.assertEqual(self.run_probe('test -z "$OPENAI_API_KEY$TRACKER_TOKEN$OTHER$USER$HOME"')[0], 0)  # nothing of the engine's environment
-            self.settings.grants = {"flows/vuln-triage": {"secrets": ["TRACKER_TOKEN"]}, "tools/sbom-query": {"secrets": ["OTHER"]}}
-            self.assertEqual(self.settings.check(), [])
-            self.assertEqual(self.run_probe('test "$TRACKER_TOKEN" = granted-to-this-flow && test -z "$OPENAI_API_KEY$OTHER"')[0], 0)
-            self.assertEqual(self.run_probe('test -z "$TRACKER_TOKEN" && test "$AGENTFLOW_TRIAL" = 1', trial=True)[0], 0)  # a trial withholds them
+    def test_a_script_sees_what_the_engine_tells_it_and_none_of_its_keys(self):
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "sk-engine-only", "TRACKER_TOKEN": "the engine's own"}):
+            self.assertEqual(self.run_probe('test -z "$OPENAI_API_KEY$TRACKER_TOKEN$USER$HOME"')[0], 0)  # nothing of the engine's environment
+            self.assertEqual(self.run_probe('test -z "$AGENTFLOW_TRIAL"')[0], 0)
+            self.assertEqual(self.run_probe('test "$AGENTFLOW_TRIAL" = 1', trial=True)[0], 0)  # a script is told when the run is a trial
+            self.assertEqual(self.run_probe('test "$AGENTFLOW_FLOW" = vuln-triage && test "$AGENTFLOW_RUN" = r1 && test -f "$AGENTFLOW_HOME/agentflow.yaml"')[0], 0)
             self.assertEqual(self.run_probe('test "$AGENTFLOW_ITEM_ID" = SEC-1 && test -f "$AGENTFLOW_FLOW_DIR/flow.yaml" && test "$PWD" = "$(cd . && pwd)"')[0], 0)
-        self.settings.grants = {"flows/missing": {"secrets": []}, "tools/sbom-query": {"secrets": ["X"], "surprise": 1}, "tools/deps-why": "x"}
-        self.assertEqual(self.settings.check(), ["grants: 'flows/missing' is not a source, tool or flow in the plugins folder",
-                                                 "grants: tools/sbom-query: unknown key 'surprise'", "grants: tools/deps-why: give 'secrets', a list of variable names"])
 
     def test_the_exit_codes_and_the_stop(self):
         self.assertEqual(asyncio.run(run_proc([str(self.probe), "cat; echo ' seen' >&2; exit 78"], self.work, stdin='{"id": 1}', **self.settings.proc())), (DONE_EARLY, '{"id": 1} seen'))
@@ -430,7 +438,7 @@ class Scripts(Home):
                     yield {i: DeltaToolCall(name=part.tool_name, json_args=json.dumps(part.args))}
 
         events = []
-        with mock.patch("agentflow.agents.build_model", lambda *a, **k: FunctionModel(lambda m, i: script(m), stream_function=stream)):
+        with mock.patch("agentflow.workers.agents.build_model", lambda *a, **k: FunctionModel(lambda m, i: script(m), stream_function=stream)):
             said, stats = asyncio.run(run_agent(self.settings, "Use the tools.", "go", [self.ctx().tool("notes")], on_event=lambda kind, **d: events.append((kind, d))))
         self.assertIn(str(self.work.resolve()), said)  # the server is started in the item's folder
         self.assertIn("noted", said)

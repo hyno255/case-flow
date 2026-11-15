@@ -16,9 +16,9 @@ from pydantic_ai.mcp import MCPToolset  # noqa: E402
 from pydantic_ai.messages import ModelResponse  # noqa: E402
 from pydantic_ai.usage import UsageLimits  # noqa: E402
 
-from .harness import not_ready  # noqa: E402
-from .layout import confined, visible_files  # noqa: E402
-from .procs import run_proc  # noqa: E402
+from agentflow.workers.harness import not_ready  # noqa: E402
+from agentflow.records.layout import confined, visible_files  # noqa: E402
+from agentflow.workers.procs import run_proc  # noqa: E402
 
 DEFAULT_AGENT = (
     "You carry out one stage of a flow. The stage's method is below; follow it exactly. "
@@ -125,12 +125,13 @@ def person_tool(asked: list[str]) -> Tool:
 
 # ---------- the model ----------
 
-def build_model(settings, spec=None):
+def build_model(settings, spec=None, stand_in=None):
     """The model for one agent run. `spec` is what the stage, the agent or the flow picked: a name from
-    agentflow.yaml, a mapping, or nothing for the default. Each model reads its own key from its own variable."""
+    agentflow.yaml, a mapping, or nothing for the default. Each model reads its own key from its own variable.
+    On the stand-in, the flow's own `stand_in` script answers in the model's place."""
     if settings.stand_in:
-        from . import stand_in
-        return stand_in.build()
+        from agentflow.workers.stand_in import build
+        return build(stand_in)
     try:
         m = settings.model(spec)
     except ValueError as e:
@@ -152,8 +153,8 @@ def build_model(settings, spec=None):
         provider = LiteLLMProvider(api_key=key, api_base=m.get("base_url"))
     else:
         raise ModelNotReady(f"unknown provider '{m['provider']}'; use openai or litellm")
-    effort = m.get("reasoning", "low")
-    if m.get("api", "responses") == "responses":  # some models only allow tools with reasoning on this interface
+    effort = m["reasoning"]
+    if m["api"] == "responses":  # some models only allow tools with reasoning on this interface
         return OpenAIResponsesModel(m["name"], provider=provider,
                                     settings=OpenAIResponsesModelSettings(openai_reasoning_effort=effort, openai_store=False))
     return OpenAIChatModel(m["name"], provider=provider, settings=OpenAIChatModelSettings(openai_reasoning_effort=effort))
@@ -171,7 +172,7 @@ def check_ready(settings, spec=None) -> None:
 
 
 async def run_agent(settings, instructions: str, prompt: str, tools: list, output_type=str, on_event=lambda *a, **k: None, model=None,
-                    limits: dict | None = None):
+                    limits: dict | None = None, stand_in=None):
     """One agent run on the model picked for it. Tool calls are reported through on_event while the agent is still working.
     `limits` are the flow's (model_calls, event_chars); without them the platform's apply."""
     limits = limits or settings.limits
@@ -200,7 +201,7 @@ async def run_agent(settings, instructions: str, prompt: str, tools: list, outpu
             requests.append((began, time.time()))
 
     started = time.time()
-    agent = Agent(build_model(settings, model), instructions=instructions, tools=[t for t in tools if isinstance(t, Tool)],
+    agent = Agent(build_model(settings, model, stand_in), instructions=instructions, tools=[t for t in tools if isinstance(t, Tool)],
                   toolsets=[t.toolset() for t in tools if isinstance(t, McpTool)], output_type=output_type)  # an MCP server lives for this run only
     result = await agent.run(prompt, event_stream_handler=stream, usage_limits=UsageLimits(request_limit=limits["model_calls"]))
     tool_calls = 0

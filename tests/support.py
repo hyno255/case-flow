@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from agentflow.settings import Settings
-from agentflow.store import Store
+from agentflow.records.store import Store
 
 ROOT = Path(__file__).resolve().parent.parent
 CHANGE = {"X-Agentflow": "1"}  # the header every change through the API needs

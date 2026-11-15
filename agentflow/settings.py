@@ -1,19 +1,17 @@
-"""Platform settings: agentflow.yaml plus secrets from the environment or a .env file."""
+"""Platform settings: agentflow.yaml plus model keys from the environment or a .env file."""
 import os
 from pathlib import Path
 
 import yaml
 
-from .harness import CLIS
+from agentflow.workers.harness import CLIS
 
 MODEL_DEFAULTS = {"provider": "openai", "name": "", "api_key_env": "OPENAI_API_KEY", "api": "responses", "reasoning": "low"}
 MODEL_KEYS = set(MODEL_DEFAULTS) | {"base_url"}
 HARNESS_KEYS = {"harness", "name", "api_key_env"}  # a model entry whose work a CLI does: which CLI, which model, and a key if not its own sign-in
 DEFAULTS = yaml.safe_load(Path(__file__).with_name("defaults.yaml").read_text())  # every limit and its default; no number lives in the code
 SECTIONS = tuple(DEFAULTS)  # limits, engine, show
-LIMIT_KEYS = set(DEFAULTS["limits"])
 MAY_BE_ZERO = {"cost_per_run_usd"}
-GRANT_KEYS = {"secrets"}
 
 
 def check_numbers(section: str, written, where: str = "") -> list[str]:
@@ -48,7 +46,6 @@ class Settings:
         self.default_model = raw.get("model")   # the name used where nothing picks one
         self.written = {s: raw.get(s) or {} for s in SECTIONS}  # what agentflow.yaml itself sets; the rest are defaults
         self.limits, self.engine, self.show = ({**DEFAULTS[s], **(self.written[s] if isinstance(self.written[s], dict) else {})} for s in SECTIONS)
-        self.grants = raw.get("grants") or {}
         self.plugins = self.home / "plugins"
         self.data = self.home / "data"
         self.stand_in = False  # use the scripted model; set by --stand-in and by tests
@@ -71,15 +68,6 @@ class Settings:
         """How a script is run: its time limit, and how the engine watches and stops it. For run_proc."""
         return {"timeout": (limits or self.limits)["script_seconds"], "grace": self.engine["stop_grace_seconds"], "poll": self.engine["poll_seconds"]}
 
-    def granted(self, plugin: str) -> list[str]:
-        """The names of the secrets one plugin's scripts were granted, by plugin key such as 'sources/security-tickets'."""
-        g = self.grants.get(plugin)
-        return [str(x) for x in (g.get("secrets") if isinstance(g, dict) else None) or []]
-
-    def secrets_for(self, plugin: str) -> dict[str, str]:
-        """The secrets one script may see, with their values. A script's environment holds nothing else of the engine's."""
-        return {name: os.environ[name] for name in self.granted(plugin) if name in os.environ}
-
     def check(self) -> list[str]:
         """What is wrong in agentflow.yaml itself."""
         errs = [e for s in SECTIONS for e in check_numbers(s, self.written[s])]
@@ -93,14 +81,6 @@ class Settings:
             errs.append("model: name one of the entries under 'models' as the default")
         elif self.harness_of(self.default_model):
             errs.append("model: the default also runs reviewers, which stay in the engine; name a model without 'harness'")
-        for key, g in self.grants.items():
-            kind, _, name = str(key).partition("/")
-            if kind not in ("sources", "tools", "flows") or not (self.plugins / kind / name).is_dir():
-                errs.append(f"grants: '{key}' is not a source, tool or flow in the plugins folder")
-            if isinstance(g, dict):
-                errs += [f"grants: {key}: unknown key '{k}'" for k in g if k not in GRANT_KEYS]
-            else:
-                errs.append(f"grants: {key}: give 'secrets', a list of variable names")
         return errs
 
     def model(self, spec=None) -> dict:

@@ -9,11 +9,10 @@ import os
 from pathlib import Path
 from urllib.parse import quote
 
-from ..graph import compile_flow, stage_by, validated
-from ..layout import confined
-from ..plugins import STAGES, installed
-from ..render import md_to_html
-from ..settings import MODEL_DEFAULTS, SECTIONS
+from agentflow.plugins.graph import compile_flow, stage_by, validated
+from agentflow.records.layout import confined
+from agentflow.plugins.registry import STAGES, installed
+from agentflow.settings import MODEL_DEFAULTS, SECTIONS
 from . import draw, show, views
 
 KINDS = ("flows", "agents", "tools", "sources")
@@ -56,11 +55,6 @@ def model_cell(settings, spec) -> dict:
     except TypeError:  # not something a model can be named by
         label = ""
     return {"name": str(name or ""), "label": label}
-
-
-def grants_view(settings, key: str) -> list[dict]:
-    """The secrets one plugin's scripts were granted. Names only: the values never reach a page."""
-    return [{"name": n, "set": n in os.environ} for n in settings.granted(key)]
 
 
 def files_tab(settings, kind: str, name: str, file: str) -> dict:
@@ -201,6 +195,8 @@ def flow_design(settings, store, live, name: str, f: dict) -> dict:
             continue  # shown with its switch, above the keys
         elif k == "model":
             config.append(model_row(k, val))
+        elif k in ("finish", "stand_in"):
+            config.append(row(k, val, file_link("flows", name, folder, val)))
         elif k not in (STAGES, "limits") or not isinstance(val, (dict, list)):
             config.append(row(k, val))
     if "model" not in f:
@@ -244,12 +240,12 @@ def flow_design(settings, store, live, name: str, f: dict) -> dict:
             rows.append(row("next", g.after(sid), f"#stage-{g.after(sid)}" if g.after(sid) in g.stages else "", mark="default"))
         md = _load(live.stage_method, name, sid, default="")
         stages.append({"id": sid, "by": "agent" if agent else stage_by(s), "rows": rows, "md": f"{STAGES}/{sid}.md" if md else "",
-                       "md_href": file_link("flows", name, folder, f"{STAGES}/{sid}.md"), "md_html": md_to_html(md) if md else ""})
+                       "md_href": file_link("flows", name, folder, f"{STAGES}/{sid}.md"), "md_html": show.md_to_html(md) if md else ""})
 
     goal = _load(live.flow_goal, name, default="")
     return {"graph": draw.graph(f, settings.limits_for(f), _load(live.source, str(f.get("source") or ""), default={})), "config": config, "stages": stages,
             "failing_tools": failing_tools(settings, store, live, f),
-            "goal_html": md_to_html(goal) if goal else "", "goal_href": file_link("flows", name, folder, "FLOW.md"),
+            "goal_html": show.md_to_html(goal) if goal else "", "goal_href": file_link("flows", name, folder, "FLOW.md"),
             "yaml_href": file_link("flows", name, folder, "flow.yaml")}
 
 
@@ -289,7 +285,7 @@ def agent_view(settings, name: str, tab: str = "config", file: str = "") -> dict
                        *[row(k, val) for k, val in meta.items() if k not in ("description", "model", "tools")]]
         v["used"] = uses(live)[0].get(name, [])
     elif tab == "method":
-        v["method_html"], v["method_href"] = md_to_html(body), file_link("agents", name, folder, "AGENT.md")
+        v["method_html"], v["method_href"] = show.md_to_html(body), file_link("agents", name, folder, "AGENT.md")
     else:
         v.update(files_tab(settings, "agents", name, file))
     return v
@@ -312,7 +308,6 @@ def tool_view(settings, store, name: str, tab: str = "config", file: str = "") -
         v["config"] = [row("description", t.get("description", "")), *how,
                        *[row(k, val) for k, val in t.items() if k not in ("description", "args", "run", "health", "mcp")]]
         v["used"] = [{"agent": a, "stages": by_agent.get(a, [])} for a in agents]
-        v["grants"] = grants_view(settings, f"tools/{name}")
     else:
         v.update(files_tab(settings, "tools", name, file))
     return v
@@ -332,7 +327,6 @@ def source_view(settings, store, name: str, tab: str = "config", file: str = "")
                        *[row(k, val) for k, val in s.items() if k not in ("description", "run", "output", "fields")]]
         accepting = {f: _load(live.flow, f, default={}) for f in v["flows"]}
         v["accepted"] = [{"flow": f, "where": show.where_text(spec.get("where")), "schedule": schedule_cell(store, f, spec)} for f, spec in accepting.items()]
-        v["grants"] = grants_view(settings, f"sources/{name}")
     elif tab == "fetches":
         v["fetches"] = [{"at": show.when(f["started"]), "by": show.fetch_by(f["scheduled_for"]),
                          "outcome": f["outcome"] or "running", "count": f["item_count"], "detail": f["detail"] or "",
@@ -359,12 +353,7 @@ def settings_view(settings) -> dict:
         models.append({"name": name, "default": name == settings.default_model, "runs_on": f"{m['harness']} CLI" if "harness" in m else "engine",
                        "provider": m.get("provider", ""), "model": m.get("name", ""), "api": m.get("api", ""), "reasoning": m.get("reasoning", ""),
                        "key_env": m.get("api_key_env", ""), "key_set": bool(os.environ.get(m.get("api_key_env") or ""))})
-    kinds = {k: installed(settings).names(k) for k in KINDS}
-    grants = []
-    for key in settings.grants:
-        kind, _, name = str(key).partition("/")
-        grants.append({"plugin": str(key), "href": f"/{key}" if name in kinds.get(kind, []) else "", "secrets": grants_view(settings, key)})
     return {"file": str(settings.home / "agentflow.yaml"), "plugins": str(settings.plugins), "data": str(settings.data), "errors": settings.check(),
-            "models": models, "grants": grants,
+            "models": models,
             "numbers": [{"name": s, "title": NUMBERS[s], "rows": [row(k, val, mark="" if k in written else "default") for k, val in getattr(settings, s).items()]}
                         for s in SECTIONS for written in [settings.written[s] if isinstance(settings.written[s], dict) else {}]]}

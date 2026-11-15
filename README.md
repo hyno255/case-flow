@@ -2,7 +2,7 @@
 
 A small engine that takes items from a source (tickets, alerts, findings) through a flow of stages, where each stage is done
 by a script or an agent and then checked. It orchestrates and routes; everything specific lives in plugin folders.
-Every run can be traced down to each model call and ends with a report.
+Every run can be traced down to each model call. What a run puts out, a report for example, is written by the flow's own script.
 
 The engine runs in one Docker image. Nothing of yours is inside it: settings, plugins, data and any other folder are attached when it starts.
 
@@ -22,17 +22,19 @@ docker compose run --rm agentflow check
 docker compose run --rm agentflow run vuln-triage --stand-in
 ```
 
-`--stand-in` uses a scripted model that needs no key and costs nothing. For a real model, put its key in `.env`
+`--stand-in` needs no key and costs nothing: the script the flow names as `stand_in` in its `flow.yaml` answers in the model's place
+(the example's is `plugins/flows/vuln-triage/scripts/stand_in.py`, which also says what it is asked and what it prints). For a real model, put its key in `.env`
 (for the example settings: `OPENAI_API_KEY=...`); `compose.yaml` passes that file to the container.
 
 | Command | What it does |
 |---|---|
 | `check` | checks every plugin file and the settings, and runs every tool's health check |
-| `run <flow> [--force]` | fetches the flow's source now and runs the flow |
-| `try <flow> [--item ID]` | one item as a trial; it does not count as done |
+| `run <flow>` | fetches the flow's source now and runs the flow over every item it accepts |
+| `try <flow> [--item ID]` | one item as a trial; the flow's scripts are told it is one |
 | `schedule [on\|off <flow>]` | shows the flows' schedules, or switches one |
 | `show [run] [item]` | recent runs, or what one run or item did and cost |
-| `resume <run>`, `retry <run> <item>`, `cancel <run>` | what can be done with a run afterwards |
+| `resume <run>`, `cancel <run>` | what can be done with a run afterwards |
+| `history [flow] [--item ID]` | for a flow's own scripts: how items ended in earlier runs and where their files are, as JSON |
 | `serve` | the web UI, the API, the schedules and the health checks |
 
 ## What you attach
@@ -41,17 +43,17 @@ docker compose run --rm agentflow run vuln-triage --stand-in
 
 | On your machine | In the container | What it is |
 |---|---|---|
-| `agentflow.yaml` | `/work/agentflow.yaml` (read-only) | models, limits, and which secrets each plugin's scripts may see |
+| `agentflow.yaml` | `/work/agentflow.yaml` (read-only) | models and limits |
 | `plugins/` | `/work/plugins` (read-only) | flows, agents, tools, sources |
 | `data/` | `/work/data` | the database, one folder per fetch, one folder per run |
 | any other folder | wherever you mount it | what your scripts need to read |
-| `.env` | environment | model keys and the secrets named under `grants:` |
+| `.env` | environment | model keys |
 
 A program that a script, a tool or an MCP server calls must be in the image: add it to the `apt-get install` line of the `Dockerfile`
 and build again. `nodejs` and `npm` are already there, with the two coding CLIs a stage's work can be handed to (see below).
 
 The container is the boundary between scripts and your machine. Inside it a script is a plain child process: it can read
-whatever is mounted and reach the network. It is given only the secrets its plugin was granted.
+whatever is mounted and reach the network. It sees what the engine tells it and none of the engine's keys.
 There is no sign-in, so the port is published on `127.0.0.1` only.
 
 ## Plugins
@@ -103,6 +105,48 @@ stages:
 Flows that accept the same source and come due at the same time share one fetch. A schedule is off until it is switched on,
 on the flow's page or with `schedule on <flow>`.
 
+A run works every item the flow accepts, each time, from its first stage; no run reads or continues another run's work,
+so an item that failed is worked again by the next run. A flow that should
+leave out what it has already handled does that itself: its source's script hands over only what is new, `where` narrows
+the items, or a first stage script exits with 78 to end an item at once.
+
+### What a run puts out
+
+Every run has an `output/` folder, and the flow fills it; the engine only lists and serves it:
+
+```yaml
+# a flow.yaml
+finish: scripts/report.py   # optional: runs once, when every item of the run has ended
+```
+
+- The `finish` script works in the run's output folder. On its input it gets the run and how each item ended, as JSON:
+  `{"run", "flow", "trial", "started", "items": [{"id", "ended_as", "reason", "folder", "item"}]}`.
+- Every script of a run is told `AGENTFLOW_OUTPUT`, the same folder, so a stage script can write there too.
+- The run's page lists the folder under Output, and serves each file at `/runs/<run>/output/<file>`. The pages are the flow's, not the engine's: they are served sandboxed.
+- A `finish` script that fails does not fail the run; the run's page says why. A cancelled run skips it.
+
+The example flow's `scripts/report.py` writes an index and one page per ticket this way.
+
+### Looking at earlier runs
+
+The engine never looks back. A flow that wants to, asks:
+
+```bash
+agentflow history vuln-triage --item SEC-1042
+```
+
+```json
+[{"run": "r_85d6", "started": "2026-11-14T22:45:10-08:00", "trial": false, "item": "SEC-1042", "ended_as": "done", "reason": "",
+  "folder": "/work/data/runs/2026-11-14-r_85d6/items/SEC-1042", "files": ["fix.md", "origin.md", "report.md"],
+  "output": "/work/data/runs/2026-11-14-r_85d6/output"}]
+```
+
+- Any script can call it: a source's fetch script to hand over only what is new, a stage script to end an item early.
+  Inside a run the flow is known and the asking run is left out, so `agentflow history --item "$AGENTFLOW_ITEM_ID"` is enough.
+- `agentflow history --run RUN --item ID --file PATH` prints one file of that item's work folder.
+- For an agent, the tool plugins `history` and `history-file` wrap the same two calls. An agent sees earlier runs only
+  when its `tools:` lists them.
+
 ### Tools and their health
 
 ```yaml
@@ -148,11 +192,11 @@ models:
 - A stage or an agent picks such a model. A flow's own `model:` and a reviewer's cannot, because reviewers run in the engine.
 - The trace shows the CLI's run as one span with its seconds, tokens and cost. Everything the CLI printed is kept as
   `attempts/<stage>-<try>.<cli>.jsonl` in the item's folder. Claude Code reports its cost; Codex reports tokens, which are priced from the price list.
-- The agent's script tools are named to the CLI as commands. A tool that is an MCP server, or one that was granted secrets,
-  cannot be used on such a stage, and `check` says so.
+- The agent's script tools are named to the CLI as commands. A tool that is an MCP server cannot be used on such a stage,
+  and `check` says so.
 - To set an item aside for a person, the CLI writes `needs-person.md`.
 - The item's `minutes_per_item` is the CLI's time limit, and cancelling the run stops it.
-- `--stand-in` starts a scripted CLI in its place: no sign-in, no cost.
+- `--stand-in` starts a stand-in CLI in its place, which does what the flow's `stand_in` script says: no sign-in, no cost.
 
 `agentflow check` says whether each CLI a model entry names is installed. The image has Codex and Claude Code at fixed versions
 (see the `Dockerfile`).
@@ -199,7 +243,7 @@ data/db/agentflow.db                   the store
 data/fetches/<date>-<n>-<source>/      what one fetch wrote
 data/runs/<date>-<run id>/plugins/     the plugin files as the run saw them
                           items/<id>/  each item's work folder, with events.jsonl
-                          report/      the run's output: index.html and one page per item
+                          output/      what the flow's scripts put out for this run; the engine only serves it
 ```
 
 ## Develop

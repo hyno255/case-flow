@@ -1,34 +1,31 @@
 """The command line.
 
     agentflow check                              check every plugin file and the settings, and run every tool's health check
-    agentflow try <flow> [--item ID]             one item, real stages; a trial does not count as done
-    agentflow run <flow> [--force]               fetch the flow's source now and run the flow; --force works unchanged items again
+    agentflow try <flow> [--item ID]             one item, real stages, as a trial
+    agentflow run <flow>                         fetch the flow's source now and run the flow over every item it accepts
     agentflow schedule [on|off <flow>]           show the flows' schedules, or switch one
     agentflow serve [--port 8321]                the web UI, the API and the schedules, until stopped
     agentflow show                               recent runs
     agentflow show <run> [item] [--follow]       what a run or one item did and cost; --follow prints its events until it ends
     agentflow resume <run>                       continue a run whose process stopped; finished stages are kept
-    agentflow retry <run> <item>                 run one item again from the stage it stopped at, as a new run, with today's plugin files
     agentflow cancel <run>                       stop a run: running scripts now, agents after their try
+    agentflow history [flow] [--item ID]         for a flow's own scripts: how items ended in earlier runs and where their files are, as JSON
+    agentflow history --run RUN --item ID --file PATH    one file of an item's work folder in an earlier run
 
-try, run, resume, retry and serve take --stand-in: the scripted model, which needs no key and costs nothing.
+try, run, resume and serve take --stand-in: the scripted model, which needs no key and costs nothing.
 """
 import argparse
 import asyncio
 import json
+import os
 import time
 
-from .agents import ModelNotReady
-from .harness import CLIS, cli_version
-from .health import tool_health
-from .layout import REPORT
-from .plugins import installed
-from .recovery import prepare_retry, request_cancel, resume_run, run_retry
-from .runner import FetchFailed, start_flow, try_flow
-from .schedule import register, set_schedule
-from .settings import Settings
-from .status import cost_text, item_status, run_status
-from .store import Store
+from agentflow.records.history import earlier, earlier_file
+from agentflow.records.layout import OUTPUT
+from agentflow.plugins.registry import installed
+from agentflow.settings import Settings
+from agentflow.records.status import cost_text, item_status, run_status
+from agentflow.records.store import Store
 
 
 def money(u: dict) -> str:
@@ -54,14 +51,14 @@ def live_printer(line: int):
             print(f"{who} try {event['n']} was cancelled: {event['script']} was stopped", flush=True)
         elif t == "attempt_interrupted":
             print(f"{who} try {event['n']} was interrupted: the process stopped", flush=True)
+        elif t == "finish_ended":
+            print(f"run       finish script {event['script']} " + ("ended" if event["exit_code"] == 0 else f"FAILED with exit code {event['exit_code']}: {event['output'][-line:]}"), flush=True)
         elif t == "run_interrupted":
             print(f"run       interrupted: {event['reason']}", flush=True)
         elif t == "run_resumed":
             print(f"run       resumed for {', '.join(event['items']) or 'no items'}", flush=True)
         elif t == "item_started" and event.get("from_stage"):
             print(f"{event['item']:<9} continues at {event['from_stage']}; earlier stages are kept", flush=True)
-        elif t == "item_carried_over":
-            print(f"{who} carried over from {event['from_run']}", flush=True)
         elif t == "item_ended":
             print(f"{event['item']:<9} ended: {event['ended_as']}" + (f"  ({event['reason'][:line]})" if event.get("reason") else ""), flush=True)
 
@@ -71,20 +68,19 @@ def live_printer(line: int):
 def print_run(settings, store: Store, run_id: str, item_id: str | None = None) -> int:
     run, stale, line = store.need_run(run_id), settings.engine["stale_after_seconds"], settings.show["line_chars"]
     u = store.usage(run_id)
-    retry = f" · retry of {run['retry_item']} in {run['retry_of']} from {run['from_stage']}" if run["retry_of"] else ""
-    print(f"\n{'trial' if run['trial'] else 'run'} {run_id} · {run['flow']} · {run_status(run, stale)[0]}{retry} · plugins {run['snapshot']} · {u['tokens']:,} tokens · {money(u)}")
+    print(f"\n{'trial' if run['trial'] else 'run'} {run_id} · {run['flow']} · {run_status(run, stale)[0]} · plugins {run['snapshot']} · {u['tokens']:,} tokens · {money(u)}")
     for it in store.items(run_id):
         if item_id and it["item_id"] != item_id:
             continue
         iu = store.usage(run_id, it["item_id"])
-        extra = f"from {it['carried_from']}" if it["carried_from"] else f"{iu['tool_calls']} tool calls · {iu['tokens']:,} tokens · {money(iu)} · {iu['seconds']:.0f}s"
+        extra = f"{iu['tool_calls']} tool calls · {iu['tokens']:,} tokens · {money(iu)} · {iu['seconds']:.0f}s"
         print(f"\n{it['item_id']:<9} {item_status(run, it, stale)[0]:<15} {extra}")
         if it["reason"]:
             print(f"{'':<9} {it['reason'][:line]}")
         for s in store.q("SELECT stage, MIN(by) by, COUNT(*) tries FROM attempts WHERE run_id = ? AND item_id = ? GROUP BY stage ORDER BY MIN(id)", run_id, it["item_id"]):
             su = store.usage(run_id, it["item_id"], s["stage"])
             print(f"  {s['stage']:<8} {s['by']:<15} tries {s['tries']}  {su['tool_calls']:>2} tool calls  {su['tokens']:>7,} tokens  {money(su):<18} {su['seconds']:.1f}s")
-    print(f"\nfolder    {store.path(run)}\nreport    {store.path(run) / REPORT / 'index.html'}")
+    print(f"\nfolder    {store.path(run)}\noutput    {store.path(run) / OUTPUT}")
     return 0
 
 
@@ -111,13 +107,14 @@ def follow(settings, store: Store, run_id: str) -> None:
 
 
 def cmd_check(a, settings: Settings) -> int:
-    bad = 0
-    for kind, name, errs, summary in installed(settings).check_all():
+    from agentflow.workers.harness import CLIS, cli_version
+    from agentflow.plugins.health import tool_health
+    bad, live = 0, installed(settings)
+    for kind, name, errs, summary in live.check_all():
         bad += len(errs)
         print(f"{kind:<8} {name:<20} {'ok   ' if not errs else 'ERROR'}  {summary}")
         for e in errs:
             print(f"{'':<8} {e}")
-    live = installed(settings)
     for name in live.names("tools"):
         ok, detail = asyncio.run(tool_health(settings, live, name))
         bad += not ok
@@ -132,8 +129,6 @@ def cmd_check(a, settings: Settings) -> int:
         ok, detail = asyncio.run(cli_version(settings, name))
         bad += not ok
         print(f"harness  {name:<20} {'ok   ' if ok else 'FAIL '}  {detail}")
-    for key in settings.grants:
-        print(f"grant    {key}: secrets {', '.join(settings.granted(key)) or 'none'}")
     errs = settings.check()
     for e in errs:
         print(f"ERROR    agentflow.yaml: {e}")
@@ -154,34 +149,35 @@ def flow_model(settings, flow: str) -> str:
         return "model: not known"
 
 
+# The commands below load the engine themselves, so the ones a script calls often (history, show) start fast.
+
 def cmd_try(a, settings, store) -> int:
+    from agentflow.engine.runner import try_flow
     print(f"trial · one item · {flow_model(settings, a.flow)}\n")
     return print_run(settings, store, asyncio.run(try_flow(settings, store, a.flow, a.item)))
 
 
 def cmd_run(a, settings, store) -> int:
+    from agentflow.engine.runner import start_flow
     print(f"{a.flow} · {flow_model(settings, a.flow)}\n")
-    return print_run(settings, store, asyncio.run(start_flow(settings, store, a.flow, force=a.force)))
+    return print_run(settings, store, asyncio.run(start_flow(settings, store, a.flow)))
 
 
 def cmd_resume(a, settings, store) -> int:
+    from agentflow.engine.recovery import resume_run
     print(f"resuming {a.run} · finished stages are kept{STAND_IN if settings.stand_in else ''}\n")
     return print_run(settings, store, asyncio.run(resume_run(settings, store, a.run)))
 
 
-def cmd_retry(a, settings, store) -> int:
-    new = prepare_retry(settings, store, a.run, a.item)
-    print(f"retry of {a.item} from stage {store.run(new)['from_stage']}, as run {new}{STAND_IN if settings.stand_in else ''}\n")
-    return print_run(settings, store, asyncio.run(run_retry(settings, store, new)))
-
-
 def cmd_cancel(a, settings, store) -> int:
+    from agentflow.engine.recovery import request_cancel
     how = request_cancel(store, a.run, settings.engine["stale_after_seconds"])
     print(f"{a.run}: " + ("asked to stop; running scripts are stopped now, and an agent finishes its try first" if how == "asked" else "closed; its process had already stopped"))
     return 0
 
 
 def cmd_schedule(a, settings, store) -> int:
+    from agentflow.engine.schedule import register, set_schedule
     if a.switch:
         nxt = set_schedule(settings, store, a.flow, a.switch == "on")
         print(f"{a.flow}: {a.switch}" + (f", next at {nxt}" if a.switch == "on" else ""))
@@ -194,7 +190,7 @@ def cmd_schedule(a, settings, store) -> int:
 def cmd_serve(a, settings, store) -> int:
     import uvicorn
 
-    from .web import create_app
+    from agentflow.web import create_app
     if a.host not in ("127.0.0.1", "localhost"):
         print("there is no sign-in: anyone who can reach this address can start runs and read every work folder. In a container, publish the port on 127.0.0.1 only.")
     print(f"agentflow on http://{a.host}:{a.port}{STAND_IN if settings.stand_in else ''}")
@@ -208,6 +204,20 @@ def cmd_show(a, settings, store) -> int:
     if a.follow:
         follow(settings, store, a.run)
     return print_run(settings, store, a.run, a.item)
+
+
+def cmd_history(a, settings, store) -> int:
+    """Called by a flow's script, which the engine tells its flow and its run; the asking run is left out of the answer."""
+    if a.file:
+        if not (a.run and a.item):
+            raise ValueError("--file needs --run and --item")
+        print(earlier_file(store, a.run, a.item, a.file, settings.limits["read_chars"]))
+        return 0
+    flow = a.flow or os.environ.get("AGENTFLOW_FLOW")
+    if not flow:
+        raise ValueError("name the flow: agentflow history <flow>")
+    print(json.dumps(earlier(store, flow, a.item, settings.show["history_rows"], not_run=os.environ.get("AGENTFLOW_RUN")), indent=1))
+    return 0
 
 
 def parser() -> argparse.ArgumentParser:
@@ -225,13 +235,8 @@ def parser() -> argparse.ArgumentParser:
     p = command("try", cmd_try, model=True)
     p.add_argument("flow")
     p.add_argument("--item")
-    p = command("run", cmd_run, model=True)
-    p.add_argument("flow")
-    p.add_argument("--force", action="store_true", help="triage every item again, even unchanged ones")
+    command("run", cmd_run, model=True).add_argument("flow")
     command("resume", cmd_resume, model=True).add_argument("run")
-    p = command("retry", cmd_retry, model=True)
-    p.add_argument("run")
-    p.add_argument("item")
     command("cancel", cmd_cancel).add_argument("run")
     p = command("schedule", cmd_schedule)
     p.add_argument("switch", nargs="?", choices=["on", "off"])
@@ -239,11 +244,23 @@ def parser() -> argparse.ArgumentParser:
     p = command("serve", cmd_serve, model=True)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8321)
+    p = command("history", cmd_history)
+    p.add_argument("flow", nargs="?")
+    p.add_argument("--item")
+    p.add_argument("--run")
+    p.add_argument("--file")
     p = command("show", cmd_show)
     p.add_argument("run", nargs="?")
     p.add_argument("item", nargs="?")
     p.add_argument("--follow", action="store_true", help="print the run's events until it ends, then the summary")
     return ap
+
+
+def stops() -> tuple:
+    """The errors that end a command with one line. Looked up only when a command fails."""
+    from agentflow.workers.agents import ModelNotReady
+    from agentflow.engine.runner import FetchFailed
+    return FetchFailed, ModelNotReady, ValueError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -257,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         store.listeners.append(live_printer(settings.show["line_chars"]))  # one line per thing worth watching, as the run goes
     try:
         return a.fn(a, settings, store)
-    except (FetchFailed, ModelNotReady, ValueError) as e:
+    except stops() as e:
         print(f"stopped: {e}")
         return 2
     except KeyboardInterrupt:

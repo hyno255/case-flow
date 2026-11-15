@@ -1,13 +1,24 @@
 """How values are worded on a page, and how a folder is shown: one place, so every table says the same thing the same way."""
+import re
 from datetime import datetime
 from pathlib import Path
 
-from ..layout import confined
-from ..status import cost_text
-from ..trace import seconds_text
+import markdown
+
+from agentflow.records.layout import confined
+from agentflow.records.status import cost_text
+from agentflow.records.trace import seconds_text
 
 DASH = "—"          # a value that is not known or does not apply; the cell's tooltip says which
 HIDDEN = ("__pycache__",)
+
+
+def md_to_html(text: str) -> str:
+    """A plugin's markdown file (FLOW.md, AGENT.md, a stage's method) as HTML for its page. Raw HTML in it is shown as text."""
+    md = markdown.Markdown(extensions=["tables", "fenced_code", "nl2br"])
+    md.preprocessors.deregister("html_block")
+    md.inlinePatterns.deregister("html")
+    return re.sub(r'(href|src)="(?!https?://)[^"]*"', r'\1="#"', md.convert(text))
 
 
 def when(iso: str | None) -> str:

@@ -11,13 +11,13 @@ from unittest import mock
 from fastapi.testclient import TestClient
 from genai_prices import Usage, calc_price
 
-from agentflow import harness, trace
-from agentflow.agents import ModelNotReady, check_ready
-from agentflow.harness import CLIS, Cli, CliFailed, CliStopped, cli_version, run_cli
-from agentflow.plugins import installed
-from agentflow.recovery import request_cancel
-from agentflow.runner import start_flow
-from agentflow.settings import Settings
+from agentflow.records import trace
+from agentflow.workers import harness
+from agentflow.workers.agents import ModelNotReady, check_ready
+from agentflow.workers.harness import CLIS, Cli, CliFailed, CliStopped, cli_version, run_cli
+from agentflow.plugins.registry import installed
+from agentflow.engine.recovery import request_cancel
+from agentflow.engine.runner import start_flow
 from support import Home, make_app
 
 FLOW = "plugins/flows/vuln-triage/flow.yaml"
@@ -68,7 +68,7 @@ class HandedOver(Home):
         runs = [e for e in events if e["type"] == "cli_run"]
         self.assertEqual([(e["harness"], e["n"], e["output"], e["cost_usd"]) for e in runs],
                          [(name, n, f"attempts/analyse-{n}.{name}.jsonl", 0) for n in (1, 2)])
-        self.assertTrue(all(e["tokens_in"] > 0 and e["said"] == "origin.md is written." for e in runs))
+        self.assertTrue(all(e["tokens_in"] > 0 and e["said"] == "Done." for e in runs))
         self.assertEqual([e for e in events if e["type"] == "tool_call" and e["stage"] == "analyse" and not e.get("role")], [])
         self.assertEqual([e["model"] for e in events if e["type"] == "attempt_started" and e["stage"] == "analyse"], [f"{name} CLI · scripted stand-in"] * 2)
 
@@ -139,16 +139,13 @@ class HandedOver(Home):
         def errors() -> list[str]:
             return installed(self.settings).check_flow("vuln-triage")
 
-        # a tool that is an MCP server, and a tool whose secrets the CLI is not given
+        # a tool that is an MCP server
         tool = self.home / "plugins/tools/notes"
         tool.mkdir()
         (tool / "tool.yaml").write_text("description: Notes kept beside the item.\nmcp: [python3, ./server.py]\n")
         agent.write_text(agent.read_text().replace("tools: [sbom-query, deps-why]", "tools: [sbom-query, deps-why, notes]"))
-        self.settings.grants["tools/sbom-query"] = {"secrets": ["SBOM_TOKEN"]}
-        self.assertEqual(errors(), ["stage analyse: its work goes to the codex CLI, which is not given the secrets the tool sbom-query was granted",
-                                    "stage analyse: its work goes to the codex CLI, which cannot use the tool notes: it is an MCP server, not a command"])
+        self.assertEqual(errors(), ["stage analyse: its work goes to the codex CLI, which cannot use the tool notes: it is an MCP server, not a command"])
         agent.write_text(agent.read_text().replace(", notes]", "]"))
-        self.settings.grants.clear()
         self.assertEqual(errors(), [])
 
         # reviewers stay in the engine, so neither a flow's model nor a reviewer's can name a CLI

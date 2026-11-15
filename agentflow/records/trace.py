@@ -9,16 +9,16 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .layout import prompt_file
-from .procs import DONE_EARLY
-from .status import ENDINGS, OUTCOMES, label
+from agentflow.records.layout import prompt_file
+from agentflow.workers.procs import DONE_EARLY
+from agentflow.records.status import ENDINGS, OUTCOMES, label
 
 TRY_STATE = {name: bar for name, (_, _, bar) in OUTCOMES.items() if bar}   # a try with one of these outcomes is over
 ITEM_STATE = {name: bar for name, (_, _, bar) in ENDINGS.items() if bar}
 FIXED = ("seq", "ts", "run", "item", "stage", "type")  # the fields every event has; the rest is what the event carries
 USE = ("tokens_in", "tokens_out", "cost", "model_calls", "tool_calls", "cli_runs")  # added up from the calls into every span above them
 PARTS = ("agent", "script", "check", "review")
-RUN_MARKS = {"report_rendered": "report written", "run_interrupted": "interrupted", "run_resumed": "resumed", "cancel_requested": "cancel asked for"}
+RUN_MARKS = {"finish_ended": "finish script", "run_interrupted": "interrupted", "run_resumed": "resumed", "cancel_requested": "cancel asked for"}
 
 
 def epoch(iso: str | None) -> float | None:
@@ -88,8 +88,6 @@ def build(store, run, show: dict, item_id: str | None = None, live: bool = False
             it["end"], it["ended_as"] = ts, d.get("ended_as")
             if d.get("reason"):
                 it["blocks"].append(("reason", d["reason"]))
-        elif t == "item_carried_over":
-            it["end"], it["note"], it["state"] = ts, f"carried over from {d.get('from_run')}", "skip"
         elif t == "item_started" and d.get("from_stage"):
             it["facts"].append(("continues at", d["from_stage"]))
         if d["stage"] is None:

@@ -163,7 +163,7 @@
   <h2>In short</h2>
   <div class="cards">
     <div><b>One image, one process</b><span><code>docker compose up</code> starts one container. One process in it serves the pages and the API, keeps the schedules and runs the flows. There is no queue service.</span></div>
-    <div><b>The flow is the unit</b><span>A run is always a run of one flow. It ends with a report in the run folder. The engine sends nothing anywhere.</span></div>
+    <div><b>The flow is the unit</b><span>A run is always a run of one flow. What a run puts out is written by the flow's own script into the run's output folder. The engine renders nothing and sends nothing anywhere.</span></div>
     <div><b>Source hands over, flow accepts, engine routes</b><span>A source says how items are got and what it writes. A flow says which source it accepts, which of its items, and when. The engine fetches, checks and routes.</span></div>
     <div><b>A graph with bounded loops</b><span>A flow compiles to stages joined by pass edges and fail edges. A loop exists only on a fail edge, and <code>tries</code> bounds it.</span></div>
     <div><b>Agents inside, scripts beside</b><span>Agents run in the engine's process on Pydantic AI and get only the tools they list. Scripts are plain child processes in the same container. A stage's work can also be handed to Codex or Claude Code.</span></div>
@@ -177,7 +177,7 @@
   <p>The engine runs inside one Docker image, built from the <code>Dockerfile</code> at the project root. Nothing of yours is in the image. <code>compose.yaml</code> attaches the settings, the plugins and the data folder when the container starts.</p>
 <pre class="solo"><span class="c">this machine                        one container · image agentflow · user agentflow, uid 1000</span>
 browser         ─ 127.0.0.1:8321 ─→ agentflow serve     <span class="c">pages · JSON API · event stream · scheduler · tool health · watchdog</span>
-agentflow.yaml  ─ read-only ──────→   └─ runner         <span class="c">fetch · queue · stage loop · report</span>
+agentflow.yaml  ─ read-only ──────→   └─ runner         <span class="c">fetch · queue · stage loop · finish</span>
 plugins/        ─ read-only ──────→       ├─ scripts    <span class="c">fetch · run · check: child processes behind guard.py</span>  ─→ network
 .env            ─ as environment ─→       └─ agents     <span class="c">in the engine's process, on Pydantic AI</span>               ─→ model provider
 data/           ←─ read-write ────→            └─ tools <span class="c">a script per call, or an MCP server per agent run</span>     ─→ network
@@ -209,12 +209,12 @@ docker compose run --rm agentflow run vuln-triage</pre>
     environment:
       TZ: ${TZ:-UTC}                    <span class="c"># schedules are read in this time zone</span>
     env_file:
-      - path: .env                      <span class="c"># model keys, and the secrets granted to plugins</span>
+      - path: .env                      <span class="c"># model keys</span>
         required: false
     volumes:
       - ./agentflow.yaml:/work/agentflow.yaml:ro
       - ./plugins:/work/plugins:ro      <span class="c"># flows, agents, tools, sources</span>
-      - ./data:/work/data               <span class="c"># runs, reports and the database</span>
+      - ./data:/work/data               <span class="c"># runs, their output and the database</span>
       <span class="c"># - ~/code/product:/mnt/product:ro   # any other folder your scripts read</span></pre>
     </div>
   </div>
@@ -224,8 +224,8 @@ docker compose run --rm agentflow run vuln-triage</pre>
       <ul>
         <li><b>The host.</b> The container is the boundary between scripts and the machine. A script sees the image and the attached folders, and nothing else of the machine.</li>
         <li><b>The port.</b> 8321 is bound to <code>127.0.0.1</code> only. A change through the API needs the header <code>X-Agentflow: 1</code>.</li>
-        <li><b>What a script is handed.</b> Its environment holds <code>PATH</code>, <code>LANG</code>, <code>AGENTFLOW_FLOW_DIR</code>, <code>AGENTFLOW_ITEM_ID</code>, <code>AGENTFLOW_TRIAL</code> in a trial, and the secrets granted to its plugin under <code>grants:</code> in <code>agentflow.yaml</code>. A source's fetch script gets <code>PATH</code>, <code>LANG</code>, <code>AGENTFLOW_OUT</code> (its output folder) and its granted secrets. A tool's health script gets what a call of the tool gets. Model keys are not passed on.</li>
-        <li><b>Stopping.</b> A script starts behind <code>agentflow/guard.py</code> in its own process group. The group is stopped when the script passes <code>script_seconds</code> (120 unless set), when its item runs out of time, when its run is cancelled, and when the engine goes away.</li>
+        <li><b>What a script is handed.</b> Its environment holds <code>PATH</code>, <code>LANG</code> and what the engine tells it: <code>AGENTFLOW_HOME</code>, <code>AGENTFLOW_FLOW</code>, <code>AGENTFLOW_FLOW_DIR</code>, <code>AGENTFLOW_RUN</code>, <code>AGENTFLOW_OUTPUT</code> (the run's output folder), <code>AGENTFLOW_ITEM_ID</code> for an item's scripts, and <code>AGENTFLOW_TRIAL</code> in a trial. A source's fetch script gets <code>AGENTFLOW_HOME</code> and <code>AGENTFLOW_OUT</code> (its output folder). Model keys are not passed on, and there is no way yet to hand a script a secret.</li>
+        <li><b>Stopping.</b> A script starts behind <code>agentflow/workers/guard.py</code> in its own process group. The group is stopped when the script passes <code>script_seconds</code> (120 unless set), when its item runs out of time, when its run is cancelled, and when the engine goes away.</li>
         <li><b>Agents.</b> An agent has no shell. Its file tools stay inside the item's folder: no absolute path, no <code>..</code>, no symbolic link, no writing the engine's files.</li>
       </ul>
     </div>
@@ -235,7 +235,7 @@ docker compose run --rm agentflow run vuln-triage</pre>
       <ul>
         <li>Nothing separates one script from another. A script runs as the same user as the engine.</li>
         <li>A script can read <code>agentflow.yaml</code>, every plugin, and all of <code>data/</code>: other items, other runs, the database. It can write anywhere in <code>data/</code>.</li>
-        <li>There is no network rule per plugin. <code>grants:</code> names secrets only: it decides what a script is handed, not what it can reach.</li>
+        <li>There is no network rule per plugin, and no secret is handed to a script.</li>
         <li>No plugin file mentions Docker. Every flow shares the one image, and <code>compose.yaml</code> sets no CPU or memory limit.</li>
         <li>A coding CLI that does a stage has a shell of its own. Codex is started with its sandbox set to keep writes in the item's folder, and Claude Code accepts edits in the folder it starts in; the engine does not verify either.</li>
         <li>An MCP server is started by the MCP client, not behind the guard. A script that moves itself to another session ends when the container does.</li>
@@ -313,15 +313,15 @@ fields: [service, package, fixed_in, severity, summary]</pre>
   <h3>The contract between a source and a flow</h3>
   <div class="scroll"><table class="wrap wide">
     <thead><tr><th>Who</th><th>Says</th><th>The engine</th></tr></thead><tbody>
-    <tr><td class="name">Source</td><td><code>run</code>: how and where the items are got. <code>output</code>: the JSON file its script writes into the fetch's own folder, given in <code>AGENTFLOW_OUT</code>. <code>fields</code>: what every item has.</td><td>Runs the script with the source's granted secrets. Reads the file: a JSON list of objects, each with a text <code>id</code> made of letters, digits, <code>.</code>, <code>_</code> or <code>-</code>, no id twice, every listed field present. Anything else is a failed fetch, and no flow gets an item.</td></tr>
-    <tr><td class="name">Flow</td><td><code>source</code>: the source it accepts. <code>where</code>: a field and the value, or list of values, an item must have, for example <code>where: {severity: [high, medium]}</code>. <code>schedule</code>: when.</td><td>Refuses a <code>where</code> on a field the source does not list. Hands the flow only the items that match. Flows on the same source that come due in the same slot share one fetch.</td></tr>
+    <tr><td class="name">Source</td><td><code>run</code>: how and where the items are got. <code>output</code>: the JSON file its script writes into the fetch's own folder, given in <code>AGENTFLOW_OUT</code>. <code>fields</code>: what every item has.</td><td>Runs the script. Reads the file: a JSON list of objects, each with a text <code>id</code> made of letters, digits, <code>.</code>, <code>_</code> or <code>-</code>, no id twice, every listed field present. Anything else is a failed fetch, and no flow gets an item.</td></tr>
+    <tr><td class="name">Flow</td><td><code>source</code>: the source it accepts. <code>where</code>: a field and the value, or list of values, an item must have, for example <code>where: {severity: [high, medium]}</code>. <code>schedule</code>: when. <code>finish</code>: a script of the flow that runs once when every item has ended and writes what the run puts out.</td><td>Refuses a <code>where</code> on a field the source does not list. Hands the flow only the items that match. Flows on the same source that come due in the same slot share one fetch.</td></tr>
   </tbody></table></div>
-  <p class="fine">A source has no schedule and starts nothing: it is fetched when a flow that accepts it starts. A tool script gets its <code>args</code> in order as separate values, runs in the item's folder, and what it prints is the tool's answer. Its <code>health</code> script exits with 0 when the tool works; an MCP server is healthy when it starts and lists its tools. The server checks every tool when it starts, every <code>health_every_seconds</code> (five minutes unless set) and on request, and keeps the last answer. Every agent also gets <code>list_files</code>, <code>read_file</code>, <code>write_file</code> and <code>ask_for_person</code>; a reviewer gets no <code>write_file</code>. An agent run is capped at 20 model calls. A run copies the plugin files its flow uses into its own folder and executes from that copy.</p>
+  <p class="fine">A source has no schedule and starts nothing: it is fetched when a flow that accepts it starts. A tool script gets its <code>args</code> in order as separate values, runs in the item's folder, and what it prints is the tool's answer. Its <code>health</code> script exits with 0 when the tool works; an MCP server is healthy when it starts and lists its tools. The server checks every tool when it starts, every <code>health_every_seconds</code> (five minutes unless set) and on request, and keeps the last answer. Every agent also gets <code>list_files</code>, <code>read_file</code>, <code>write_file</code> and <code>ask_for_person</code>; a reviewer gets no <code>write_file</code>. An agent sees earlier runs only when its <code>tools</code> list the plugins <code>history</code> and <code>history-file</code>, which wrap <code>agentflow history</code>. An agent run is capped at 20 model calls. A run copies the plugin files its flow uses into its own folder and executes from that copy.</p>
 </section>
 
 <section id="graph">
   <h2>The flow as a graph and the stage loop</h2>
-  <p><code>agentflow/graph.py</code> compiles the list in <code>flow.yaml</code> to a graph. The engine walks that graph, a resumed item is placed on it, and the pages draw it. <code>agentflow/stages.py</code> takes one item along it.</p>
+  <p><code>agentflow/plugins/graph.py</code> compiles the list in <code>flow.yaml</code> to a graph. The engine walks that graph, a resumed item is placed on it, and the pages draw it. <code>agentflow/stages.py</code> takes one item along it.</p>
   <div class="two">
     <div class="col">
       <h3>Two kinds of edge</h3>
@@ -361,16 +361,15 @@ fields: [service, package, fixed_in, severity, summary]</pre>
   <p>A run is always a run of one flow. A person starts it, or the flow's own schedule does. A source starts nothing.</p>
   <div class="scroll"><table class="wrap wide">
     <thead><tr><th>Start</th><th>How</th><th>What happens</th></tr></thead><tbody>
-    <tr><td class="name">A person</td><td><b>Run</b> on the flow's page · <code>POST /api/flows/{flow}/run</code> · <code>agentflow run &lt;flow&gt;</code></td><td>The flow's source is fetched, and this flow alone runs over the items it accepts.</td></tr>
-    <tr><td class="name">A person, every item</td><td><b>Run all again</b> on the flow's page · the same request with <code>{"force": true}</code> · <code>agentflow run &lt;flow&gt; --force</code></td><td>The same, and nothing is carried over.</td></tr>
+    <tr><td class="name">A person</td><td><b>Run</b> on the flow's page · <code>POST /api/flows/{flow}/run</code> · <code>agentflow run &lt;flow&gt;</code></td><td>The flow's source is fetched, and this flow alone runs over every item it accepts.</td></tr>
     <tr><td class="name">A schedule</td><td><code>schedule:</code> in <code>flow.yaml</code>, switched on with the switch on the flow's page, <code>POST /api/flows/{flow}/schedule</code> or <code>agentflow schedule on &lt;flow&gt;</code></td><td>The flow's source is fetched and the flow runs. Flows on one source that are due in the same slot share the fetch. <code>agentflow serve</code> keeps the schedules and looks every <code>schedule_every_seconds</code> (30 unless set). A schedule is off until it is switched on. Missed slots count as one.</td></tr>
-    <tr><td class="name">A trial</td><td><code>agentflow try &lt;flow&gt; [--item ID]</code></td><td>One item through the real stages, in a run folder of its own. Stage scripts and tools get <code>AGENTFLOW_TRIAL=1</code> and no granted secrets. A trial does not count as done.</td></tr>
+    <tr><td class="name">A trial</td><td><code>agentflow try &lt;flow&gt; [--item ID]</code></td><td>One item through the real stages, in a run folder of its own. Stage scripts and tools get <code>AGENTFLOW_TRIAL=1</code> so they can hold back what a trial should not do.</td></tr>
   </tbody></table></div>
   <ul>
-    <li><b>The order of a run.</b> Fetch the source into its own folder, check what it handed over, queue the items the flow accepts, work up to <code>at_once</code> of them in parallel, render the report, end the run.</li>
-    <li><b>Carried over.</b> An item whose content is the same, and that ended as done or needs a person in an earlier run of this flow, is not worked again. Its row points at the earlier folder, and it costs nothing.</li>
+    <li><b>The order of a run.</b> Fetch the source into its own folder, check what it handed over, queue the items the flow accepts, work up to <code>at_once</code> of them in parallel, run the flow's <code>finish</code> script, end the run.</li>
+    <li><b>A run is just a run.</b> Every item the flow accepts is worked, in this run's own folder. The engine does not compare a run with earlier ones. A flow that should leave out what it has already handled does that itself: its source's script hands over only what is new, <code>where</code> narrows the items, or a first stage script exits 78 to end an item at once. Any of its scripts can ask what earlier runs did with <code>agentflow history [flow] [--item ID]</code>, which answers in JSON with how each item ended and where its files are.</li>
     <li><b>Refused at the start.</b> A flow that does not pass its checks, and a flow that uses a model whose key is not set.</li>
-    <li><b>The report is the output.</b> A run ends with <code>report/index.html</code> and one page per item in its folder. The engine sends nothing anywhere. Posting a result somewhere is a flow's own stage script or tool, with a granted secret.</li>
+    <li><b>The output is the flow's.</b> Every run has an <code>output/</code> folder. The flow's <code>finish</code> script runs once when every item has ended, in that folder, with the run and how each item ended as JSON on its input; stage scripts are told the folder too. The engine writes nothing there and renders no report: it lists the folder on the run's page and serves its files. A <code>finish</code> script that fails does not fail the run, and a cancelled run skips it.</li>
   </ul>
 </section>
 
@@ -398,17 +397,16 @@ limits:                         <span class="c"># a flow's own limits win</span>
   read_chars: 20000             <span class="c"># and four more text sizes</span>
 engine: {stale_after_seconds: 60}  <span class="c"># the engine's timings</span>
 show: {rows: 50}                <span class="c"># what pages and the CLI show</span>
-grants: {}                      <span class="c"># e.g. sources/security-tickets: {secrets: [TRACKER_TOKEN]}</span></pre>
     </div>
     <div class="col">
       <ul>
         <li>A model is a named entry under <code>models:</code>, with its own key variable. A <code>litellm</code> entry also takes <code>base_url</code>.</li>
         <li><b>Picked in this order:</b> <code>model:</code> on the stage, in the agent's <code>AGENT.md</code>, in <code>flow.yaml</code>, then the platform default.</li>
         <li>A reviewer uses its own agent's model, then the flow's, then the default.</li>
-        <li>Keys come from the environment. <code>agentflow/agents.py</code> is the only module that knows about providers.</li>
+        <li>Keys come from the environment. <code>agentflow/workers/agents.py</code> is the only module that knows about providers.</li>
         <li>The pages show no global model. The model is shown on the flow, the stage, the agent, and each try in the trace.</li>
         <li>An entry with <code>harness:</code> hands a stage's work to a coding CLI. The next section describes it.</li>
-        <li><code>--stand-in</code> swaps in a scripted model, and a scripted CLI, that need no key and cost nothing. They only know <code>vuln-triage</code>.</li>
+        <li><code>--stand-in</code> needs no key and costs nothing. The engine's stand-in model and stand-in CLI know no flow: once per model request they ask the script the flow names as <code>stand_in</code> in <code>flow.yaml</code> what the model would do next (call these tools, done, or a reviewer's verdict). A flow without that key cannot be run on the stand-in.</li>
       </ul>
     </div>
   </div>
@@ -435,9 +433,9 @@ models:
       <ul>
         <li><code>harness</code> is <code>codex</code> or <code>claude</code>. With <code>api_key_env</code> the CLI is handed that key under its own variable name. Without it the CLI uses its own sign-in.</li>
         <li>A stage or an agent picks such a model. A flow's <code>model:</code>, a reviewer's model and the platform default cannot name one, because reviewers run in the engine. <code>check</code> says so.</li>
-        <li>How each CLI is started and how its output is read is in <code>agentflow/harness.py</code>. None of it is a setting.</li>
+        <li>How each CLI is started and how its output is read is in <code>agentflow/workers/harness.py</code>. None of it is a setting.</li>
         <li>A run asks before it starts whether the CLI is installed and the named key is set.</li>
-        <li><code>--stand-in</code> starts <code>stand_in_cli.py</code> in the CLI's place.</li>
+        <li><code>--stand-in</code> starts <code>stand_in_cli.py</code> in the CLI's place; it does what the flow's <code>stand_in</code> script says.</li>
       </ul>
     </div>
   </div>
@@ -452,9 +450,9 @@ check script ─→ reviewer ─→ pass, try again, or a person   <span class="
   <div class="scroll"><table class="wrap mid">
     <thead><tr><th>What</th><th>How</th></tr></thead><tbody>
     <tr><td class="name">What the CLI is told</td><td>The stage's instructions, then a note, then the prompt. The note says where it is, which commands it may run, and how to ask for a person. The prompt is also kept as <code>attempts/&lt;stage&gt;-&lt;n&gt;.prompt.md</code>.</td></tr>
-    <tr><td class="name">Tools</td><td>Each script tool the agent lists is named as a command with its arguments. A tool that is an MCP server, or one that was granted secrets, cannot be used; <code>check</code> refuses such a stage.</td></tr>
+    <tr><td class="name">Tools</td><td>Each script tool the agent lists is named as a command with its arguments. A tool that is an MCP server cannot be used; <code>check</code> refuses such a stage.</td></tr>
     <tr><td class="name">Asking for a person</td><td>The CLI writes <code>needs-person.md</code>. The engine takes its text as the reason and moves the file to <code>attempts/</code>.</td></tr>
-    <tr><td class="name">What it sees of the engine</td><td><code>PATH</code>, <code>LANG</code>, the user's home and name, <code>AGENTFLOW_FLOW_DIR</code>, <code>AGENTFLOW_ITEM_ID</code>, <code>AGENTFLOW_TRIAL</code> in a trial, and the key when the entry names one. No granted secret.</td></tr>
+    <tr><td class="name">What it sees of the engine</td><td><code>PATH</code>, <code>LANG</code>, the user's home and name, what every script of the item is told, and the key when the entry names one.</td></tr>
     <tr><td class="name">Time and stopping</td><td>The item's <code>minutes_per_item</code> is its time limit. A cancelled run stops it and everything it started, as it stops a script.</td></tr>
     <tr><td class="name">What is kept</td><td><code>attempts/&lt;stage&gt;-&lt;n&gt;.&lt;cli&gt;.jsonl</code> holds everything it printed. Codex also writes its last message to <code>attempts/&lt;stage&gt;-&lt;n&gt;.codex.md</code>.</td></tr>
     <tr><td class="name">Cost</td><td>Claude Code reports its cost. Codex reports tokens and no cost, so its tokens are priced from the price list, cached input included. A model the list does not have leaves the cost not recorded.</td></tr>
@@ -480,8 +478,8 @@ check script ─→ reviewer ─→ pass, try again, or a person   <span class="
         │       ├── attempts/     <span class="c"># &lt;stage&gt;-&lt;n&gt;.prompt.md: what each try was told</span>
         │       ├── verdicts/     <span class="c"># &lt;stage&gt;-&lt;n&gt;.md: what each validation said</span>
         │       └── …             <span class="c"># the files the stages wrote</span>
-        └── report/          <span class="c"># index.html, &lt;item id&gt;.html</span></pre>
-      <p class="fine">Every name here is defined once, in <code>agentflow/layout.py</code>. The store keeps folders relative to <code>data/</code>, so the data folder can be moved. <code>events.jsonl</code>, <code>attempts/</code> and <code>verdicts/</code> belong to the engine: an agent's <code>write_file</code> refuses them. A run id starts with <code>r_</code>, a trial's with <code>t_</code>.</p>
+        └── output/          <span class="c"># what the flow's scripts put out; the engine only serves it</span></pre>
+      <p class="fine">Every name here is defined once, in <code>agentflow/records/layout.py</code>. The store keeps folders relative to <code>data/</code>, so the data folder can be moved. <code>events.jsonl</code>, <code>attempts/</code> and <code>verdicts/</code> belong to the engine: an agent's <code>write_file</code> refuses them. A run id starts with <code>r_</code>, a trial's with <code>t_</code>.</p>
     </div>
     <div class="col">
       <div class="scroll"><table>
@@ -489,26 +487,25 @@ check script ─→ reviewer ─→ pass, try again, or a person   <span class="
         <tr><td class="key"><code>schedules</code></td><td>Flow with a schedule: on or off, and when it is next due.</td></tr>
         <tr><td class="key"><code>fetches</code></td><td>Fetch of a source: its folder, outcome and item count. Unique on source and slot, so a slot is fetched once.</td></tr>
         <tr><td class="key"><code>health</code></td><td>Tool: whether its last check passed, what it said, and when.</td></tr>
-        <tr><td class="key"><code>runs</code></td><td>Run of one flow: source, fetch, plugin hash, trial, folder, last sign of life, cancel request, what it is a retry of.</td></tr>
-        <tr><td class="key"><code>items</code></td><td>Item in a run: fingerprint, folder, how it ended and why, where it was carried from, the item as fetched.</td></tr>
+        <tr><td class="key"><code>runs</code></td><td>Run of one flow: source, fetch, plugin hash, trial, folder, last sign of life, cancel request.</td></tr>
+        <tr><td class="key"><code>items</code></td><td>Item in a run: folder, how it ended and why, the item as fetched.</td></tr>
         <tr><td class="key"><code>attempts</code></td><td>Try at a stage: who did it, start, end, outcome, model calls, tool calls, tokens, cost.</td></tr>
         <tr><td class="key"><code>verdicts</code></td><td>Validation of a try: by whom, pass or fail, the reason, whether a person is needed.</td></tr>
         <tr><td class="key"><code>events</code></td><td>Thing that happened, in order: run, item, stage, type, data. Append-only.</td></tr>
       </tbody></table></div>
-      <p class="fine">Facts go in and status is worked out when asked, in <code>agentflow/status.py</code>. Claiming an item, ending an item and taking over a run are single conditional updates, so there is one winner. A cost that was not recorded is not zero: it shows as a dash, or as <code>≥</code> a partial sum.</p>
+      <p class="fine">Facts go in and status is worked out when asked, in <code>agentflow/records/status.py</code>. Claiming an item, ending an item and taking over a run are single conditional updates, so there is one winner. A cost that was not recorded is not zero: it shows as a dash, or as <code>≥</code> a partial sum.</p>
     </div>
   </div>
 </section>
 
 <section id="recovery">
   <h2>Recovery</h2>
-  <p>Nothing in <code>agentflow/recovery.py</code> acts by itself. The watchdog records; a person or a command decides.</p>
+  <p>Nothing in <code>agentflow/engine/recovery.py</code> acts by itself. The watchdog records; a person or a command decides. Resume and cancel stay inside one run. No run reads or continues the work of another: an item that failed is worked again, from its first stage, by the next run of the flow.</p>
   <div class="scroll"><table class="wrap wide">
     <thead><tr><th>Part</th><th>How it works</th><th>Command · endpoint</th></tr></thead><tbody>
     <tr><td class="name">Sign of life</td><td>The process doing a run writes a time to the run's row every <code>heartbeat_seconds</code> (5 unless set). A run with no ending and no sign of life for <code>stale_after_seconds</code> (60) shows as interrupted.</td><td></td></tr>
     <tr><td class="name">Watchdog</td><td>Every <code>watch_every_seconds</code> (15 unless set) inside <code>agentflow serve</code>, and at the start of a resume or a cancel. It closes the open tries of a quiet run as interrupted and adds an event. It never resumes and never cleans up.</td><td></td></tr>
     <tr><td class="name">Resume</td><td>Takes over an interrupted run. A run that is alive or finished is refused. An item that had ended is left alone. An unfinished item is put back on the graph where its latest try left it, in its own folder, with the reasons of its rejected tries.</td><td><code>agentflow resume &lt;run&gt;</code> · <code>POST /api/runs/{run}/resume</code> · Resume on the run's page</td></tr>
-    <tr><td class="name">Retry</td><td>For an item that has ended. A new run of that one item, with the plugin files as they are on disk. It starts at the stage the item stopped at, or at the first stage if the item was done. Its folder starts as a copy of the old one, and the earlier stages are kept. The old run is not changed.</td><td><code>agentflow retry &lt;run&gt; &lt;item&gt;</code> · <code>POST /api/runs/{run}/items/{item}/retry</code> · Retry on the item's page</td></tr>
     <tr><td class="name">Cancel</td><td>In a live run, a running stage script or check script is stopped within half a second and its item ends as cancelled. An agent finishes its try, then its item stops. A run whose process is gone is closed on the spot. Folders are kept.</td><td><code>agentflow cancel &lt;run&gt;</code> · <code>POST /api/runs/{run}/cancel</code> · Cancel on the run's page</td></tr>
   </tbody></table></div>
 </section>
@@ -518,13 +515,13 @@ check script ─→ reviewer ─→ pass, try again, or a person   <span class="
   <p>FastAPI renders the pages on the server from Jinja2 templates. A page of a run that is still going follows one server-sent event stream and asks for its changed part again. The sidebar reads Runs, then Design: Flows, Agents, Tools, Sources, then System: Settings.</p>
   <div class="scroll"><table class="wrap wide">
     <thead><tr><th>Page</th><th>Tabs</th><th>Shows</th></tr></thead><tbody>
-    <tr><td class="name">Runs <small><code>/</code></small></td><td></td><td>One row per run: flow, start and what started it, status, items, cost, duration, and the link to its report. Nothing starts here. With no run yet: the three steps from a source to a run.</td></tr>
-    <tr><td class="name">Run <small><code>/runs/{run}</code></small></td><td>Items · Trace · Log · Flow</td><td>The items with status, stage, reason, cost and work folder. The trace as a tree with a detail pane. The live log. The flow's graph with this run's numbers. Resume and Cancel when they apply.</td></tr>
-    <tr><td class="name">Item <small><code>/runs/{run}/items/{item}</code></small></td><td>Output · Trace · Files · Log</td><td>The rendered report. The trace down to each model call and tool call. The work folder as a file tree with a preview. Retry.</td></tr>
-    <tr><td class="name">Flow <small><code>/flows/{name}</code></small></td><td>Design · Files · Runs</td><td>Run and Run all again. The schedule and its switch. A warning when a tool its agents use is failing. The graph drawn top to bottom, pass edges solid and fail edges dashed, beside every key of <code>flow.yaml</code> and what the engine fills in.</td></tr>
+    <tr><td class="name">Runs <small><code>/</code></small></td><td></td><td>One row per run: flow, start and what started it, status, items, cost, duration, and the link to its output when the flow wrote an <code>index.html</code>. Nothing starts here. With no run yet: the three steps from a source to a run.</td></tr>
+    <tr><td class="name">Run <small><code>/runs/{run}</code></small></td><td>Items · Output · Trace · Log · Flow</td><td>The items with status, stage, reason, cost and work folder. The files the flow put in the run's output folder, each a link. The trace as a tree with a detail pane. The live log. The flow's graph with this run's numbers. Resume and Cancel when they apply.</td></tr>
+    <tr><td class="name">Item <small><code>/runs/{run}/items/{item}</code></small></td><td>Files · Trace · Log</td><td>The work folder as a file tree with a preview. The trace down to each model call and tool call. Why the item stopped, above the tabs.</td></tr>
+    <tr><td class="name">Flow <small><code>/flows/{name}</code></small></td><td>Design · Files · Runs</td><td>Run. The schedule and its switch. A warning when a tool its agents use is failing. The graph drawn top to bottom, pass edges solid and fail edges dashed, beside every key of <code>flow.yaml</code> and what the engine fills in.</td></tr>
     <tr><td class="name">Agent, tool, source <small><code>/agents/{name}</code> <code>/tools/{name}</code> <code>/sources/{name}</code></small></td><td>Config · Method · Files<br>Config · Files<br>Config · Fetches · Files</td><td>What the file says, what uses it, and the files as a tree with a preview. A tool has its health, with Check now. A source has what it hands over, the flows that accept it, and each fetch with its folder and the runs it fed.</td></tr>
     <tr><td class="name">Lists <small><code>/flows</code> <code>/agents</code> <code>/tools</code> <code>/sources</code></small></td><td></td><td>Flows: source, schedule, last run. Agents: description, model. Tools: health, description, kind, with Check all. Sources: description, output, last fetch.</td></tr>
-    <tr><td class="name">Settings <small><code>/settings</code></small></td><td></td><td>Read-only: models with their key variable and whether it is set, every limit and timing with a mark on the ones left at their default, folders, grants. A key's value is never on a page.</td></tr>
+    <tr><td class="name">Settings <small><code>/settings</code></small></td><td></td><td>Read-only: models with their key variable and whether it is set, every limit and timing with a mark on the ones left at their default, and the folders everything is under. A key's value is never on a page. No other page's head names a folder.</td></tr>
   </tbody></table></div>
   <div class="two">
     <div class="col">
@@ -533,23 +530,23 @@ GET  /api/runs   /api/runs/{run}   /api/runs/{run}/items/{item}
 GET  /api/flows  /api/agents  /api/tools  /api/sources  /api/settings
 GET  /api/events?run=…&amp;item=…&amp;after=SEQ    <span class="c"># replays, then follows</span>
 <span class="c"># changes need the header X-Agentflow: 1</span>
-POST /api/flows/{flow}/run                  <span class="c"># {"force": false}</span>
+POST /api/flows/{flow}/run
 POST /api/flows/{flow}/schedule             <span class="c"># {"enabled": true}</span>
 POST /api/tools/health   /api/tools/{name}/health   <span class="c"># check now</span>
-POST /api/runs/{run}/resume   /api/runs/{run}/cancel
-POST /api/runs/{run}/items/{item}/retry</pre>
-      <p class="fine">Tabs are addresses: <code>/runs/{run}/trace</code>, <code>/flows/{name}/files</code>. A run's report is at <code>/runs/{run}/report/index.html</code>. There is no sign-in.</p>
+POST /api/runs/{run}/resume   /api/runs/{run}/cancel</pre>
+      <p class="fine">Tabs are addresses: <code>/runs/{run}/trace</code>, <code>/flows/{name}/files</code>. A file of a run's output folder is at <code>/runs/{run}/output/{file}</code>, served sandboxed because it is the flow's page. There is no sign-in.</p>
     </div>
     <div class="col">
 <pre class="solo">agentflow check                        <span class="c"># plugin files, settings, tool health</span>
 agentflow try &lt;flow&gt; [--item ID]       <span class="c"># a trial of one item</span>
-agentflow run &lt;flow&gt; [--force]         <span class="c"># fetch the source, run the flow</span>
+agentflow run &lt;flow&gt;                   <span class="c"># fetch the source, run the flow</span>
 agentflow schedule [on|off &lt;flow&gt;]     <span class="c"># show or switch schedules</span>
 agentflow serve [--port 8321]          <span class="c"># pages, API, schedules, tool health</span>
 agentflow show                         <span class="c"># recent runs</span>
 agentflow show &lt;run&gt; [item] [--follow] <span class="c"># what a run did and cost</span>
-agentflow resume &lt;run&gt;   agentflow retry &lt;run&gt; &lt;item&gt;   agentflow cancel &lt;run&gt;</pre>
-      <p class="fine"><code>try</code>, <code>run</code>, <code>resume</code>, <code>retry</code> and <code>serve</code> take <code>--stand-in</code>. In the container, put <code>docker compose run --rm</code> in front of a command.</p>
+agentflow resume &lt;run&gt;   agentflow cancel &lt;run&gt;
+agentflow history [flow] [--item ID]   <span class="c"># for a flow's scripts: earlier runs, as JSON</span></pre>
+      <p class="fine"><code>try</code>, <code>run</code>, <code>resume</code> and <code>serve</code> take <code>--stand-in</code>. In the container, put <code>docker compose run --rm</code> in front of a command.</p>
     </div>
   </div>
 </section>
@@ -560,9 +557,9 @@ agentflow resume &lt;run&gt;   agentflow retry &lt;run&gt; &lt;item&gt;   agentf
     <div class="col">
 <pre class="solo">Dockerfile       <span class="c"># the image: the engine and the programs scripts call</span>
 compose.yaml     <span class="c"># what is attached, and the port</span>
-agentflow.yaml   <span class="c"># models, limits, engine timings, grants</span>
+agentflow.yaml   <span class="c"># models, limits, engine timings</span>
 pyproject.toml   <span class="c"># the package and what it needs</span>
-.env             <span class="c"># model keys and granted secrets</span>
+.env             <span class="c"># model keys</span>
 agentflow/       <span class="c"># the engine package</span>
 plugins/         <span class="c"># flows, agents, tools, sources</span>
 tests/           <span class="c"># test_engine.py, test_harness.py, test_recovery.py, test_web.py</span>
@@ -572,18 +569,26 @@ data/            <span class="c"># everything the engine writes</span></pre>
     </div>
     <div class="col">
 <pre class="solo">agentflow/
-├── settings.py  defaults.yaml <span class="c"># agentflow.yaml on top of every limit's default</span>
-├── plugins.py                <span class="c"># load, check and copy the plugin folders</span>
-├── graph.py  stages.py       <span class="c"># a flow compiled · one item on the graph: do, validate, decide</span>
-├── agents.py  stand_in.py    <span class="c"># one agent run: model, tools, cost · the scripted model</span>
-├── harness.py  stand_in_cli.py  <span class="c"># one try done by Codex or Claude Code · the scripted CLI</span>
-├── procs.py  guard.py        <span class="c"># scripts as child processes · stops a script with the engine</span>
-├── runner.py  schedule.py    <span class="c"># fetch, route, work, finish · which flows are due, on and off</span>
-├── health.py                 <span class="c"># whether each tool works right now</span>
-├── recovery.py               <span class="c"># watchdog, resume, retry, cancel</span>
-├── store.py  layout.py  status.py   <span class="c"># the store · every path name, once · states and their words, once</span>
-├── trace.py  render.py       <span class="c"># a run as a tree of timed spans · the report pages</span>
 ├── cli.py  __main__.py       <span class="c"># one function per command</span>
+├── settings.py  defaults.yaml <span class="c"># agentflow.yaml on top of every limit's default</span>
+├── plugins/                  <span class="c"># what is installed</span>
+│   ├── registry.py           <span class="c"># load, check and copy the plugin folders</span>
+│   ├── graph.py              <span class="c"># a flow compiled to a graph</span>
+│   └── health.py             <span class="c"># whether each tool works right now</span>
+├── engine/                   <span class="c"># the run pipeline</span>
+│   ├── runner.py             <span class="c"># fetch, route, work, finish</span>
+│   ├── stages.py             <span class="c"># one item on the graph: do, validate, decide</span>
+│   ├── recovery.py           <span class="c"># watchdog, resume, cancel</span>
+│   └── schedule.py           <span class="c"># which flows are due, on and off</span>
+├── workers/                  <span class="c"># who does the work of a try</span>
+│   ├── agents.py             <span class="c"># an agent on a model: tools, cost</span>
+│   ├── harness.py            <span class="c"># Codex or Claude Code doing a try</span>
+│   ├── procs.py  guard.py    <span class="c"># scripts as child processes · stops a script with the engine</span>
+│   └── stand_in.py  stand_in_cli.py  <span class="c"># the stand-ins for the model and the CLI</span>
+├── records/                  <span class="c"># what a run leaves, and how it is read back</span>
+│   ├── store.py  layout.py   <span class="c"># the store · every path name, once</span>
+│   ├── status.py             <span class="c"># states and their words, once</span>
+│   └── trace.py  history.py  <span class="c"># a run as a tree of timed spans · earlier runs, for a flow that asks</span>
 └── web/                      <span class="c"># __init__.py (routes), views.py, catalog.py, show.py, draw.py, templates/, static/</span></pre>
     </div>
   </div>
@@ -593,7 +598,7 @@ data/            <span class="c"># everything the engine writes</span></pre>
   <h2>Checked and not checked</h2>
   <div class="scroll"><table class="wrap mid">
     <thead><tr><th>What</th><th>State</th><th>Detail</th></tr></thead><tbody>
-    <tr><td class="name">Tests</td><td><span class="pill done">checked</span></td><td>51 tests pass on the scripted stand-in model: 20 on the engine, 9 on a stage done by a CLI, 6 on recovery, 16 on the pages.</td></tr>
+    <tr><td class="name">Tests</td><td><span class="pill done">checked</span></td><td>49 tests pass on the stand-in: 20 on the engine, 9 on a stage done by a CLI, 5 on recovery, 15 on the pages.</td></tr>
     <tr><td class="name">A stage on Codex</td><td><span class="pill done">checked</span></td><td>One trial item with gpt-6-luna and the key, on this machine and in the container: the item ended done. On this machine the analyse stage took 22.5 seconds and 95,901 tokens, priced at $0.0040; the engine's own harness took 7.4 seconds and 5,927 tokens, $0.0008.</td></tr>
     <tr><td class="name">A stage on Claude Code</td><td><span class="pill hold">not checked</span></td><td>Its own sign-in on this machine had expired, so the real run ended with that error, which the item shows as its reason. Its output is read by the tests from a recorded shape only.</td></tr>
     <tr><td class="name">In the container</td><td><span class="pill done">checked</span></td><td>On a Mac with Docker Desktop: the image builds, the server starts and checks the tools, and a flow runs from its page.</td></tr>

@@ -5,8 +5,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .layout import DB, EVENTS
-from .status import TRIAGED
+from agentflow.records.layout import DB, EVENTS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schedules (flow TEXT PRIMARY KEY, spec TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, next_due TEXT);
@@ -17,10 +16,10 @@ CREATE TABLE IF NOT EXISTS health (tool TEXT PRIMARY KEY, ok INTEGER NOT NULL, d
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, flow TEXT NOT NULL, source TEXT, fetch_id INTEGER, snapshot TEXT, trial INTEGER NOT NULL DEFAULT 0,
   folder TEXT, started TEXT, ended TEXT,
-  beat REAL, interrupted_at REAL, cancel_requested INTEGER NOT NULL DEFAULT 0, retry_of TEXT, retry_item TEXT, from_stage TEXT);
+  beat REAL, interrupted_at REAL, cancel_requested INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS items (
-  id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, flow TEXT NOT NULL, item_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
-  folder TEXT, claimed_at TEXT, ended_at TEXT, ended_as TEXT, reason TEXT, carried_from TEXT, payload TEXT,
+  id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, flow TEXT NOT NULL, item_id TEXT NOT NULL,
+  folder TEXT, claimed_at TEXT, ended_at TEXT, ended_as TEXT, reason TEXT, payload TEXT,
   UNIQUE (run_id, item_id));
 CREATE TABLE IF NOT EXISTS attempts (
   id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, item_id TEXT NOT NULL, stage TEXT NOT NULL, n INTEGER NOT NULL, by TEXT,
@@ -34,7 +33,6 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_run ON events (run_id, seq);
 CREATE INDEX IF NOT EXISTS attempts_item ON attempts (run_id, item_id, stage, n);
 CREATE INDEX IF NOT EXISTS verdicts_item ON verdicts (run_id, item_id, stage, n);
-CREATE INDEX IF NOT EXISTS items_same ON items (flow, item_id, fingerprint);
 """
 
 
@@ -110,10 +108,9 @@ class Store:
             listener(event)
 
     # ---- runs and items ----
-    def add_run(self, run_id, flow, source, fetch_id, snapshot, trial, folder, retry_of=None, retry_item=None, from_stage=None) -> None:
-        self.db.execute("""INSERT INTO runs (id, flow, source, fetch_id, snapshot, trial, folder, started, beat, retry_of, retry_item, from_stage)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (run_id, flow, source, fetch_id, snapshot, int(trial), self._rel(folder), now(), time.time(), retry_of, retry_item, from_stage))
+    def add_run(self, run_id, flow, source, fetch_id, snapshot, trial, folder) -> None:
+        self.db.execute("INSERT INTO runs (id, flow, source, fetch_id, snapshot, trial, folder, started, beat) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (run_id, flow, source, fetch_id, snapshot, int(trial), self._rel(folder), now(), time.time()))
 
     def _rel(self, folder: Path) -> str:
         return str(Path(folder).resolve().relative_to(self.root))
@@ -135,22 +132,9 @@ class Store:
     def end_run(self, run_id) -> None:
         self.db.execute("UPDATE runs SET ended = ? WHERE id = ? AND ended IS NULL", (now(), run_id))
 
-    def earlier_item(self, flow, item_id, fingerprint):
-        """The latest earlier, non-trial triage of this exact item, if any."""
-        marks = ",".join("?" * len(TRIAGED))
-        return self.one(f"""SELECT i.*, r.folder AS run_folder FROM items i JOIN runs r ON r.id = i.run_id
-                            WHERE i.flow = ? AND i.item_id = ? AND i.fingerprint = ? AND r.trial = 0 AND i.ended_as IN ({marks})
-                            ORDER BY i.id DESC LIMIT 1""", flow, item_id, fingerprint, *TRIAGED)
-
-    def add_item(self, run_id, flow, item_id, fingerprint, folder, carried=None, payload: dict | None = None) -> None:
-        body = json.dumps(payload) if payload is not None else None
-        if carried is not None:
-            self.db.execute("""INSERT INTO items (run_id, flow, item_id, fingerprint, folder, ended_at, ended_as, reason, carried_from, payload)
-                               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                            (run_id, flow, item_id, fingerprint, carried["folder"], now(), "carried_over", carried["reason"], carried["run_id"], body))
-        else:
-            self.db.execute("INSERT INTO items (run_id, flow, item_id, fingerprint, folder, payload) VALUES (?,?,?,?,?,?)",
-                            (run_id, flow, item_id, fingerprint, self._rel(folder), body))
+    def add_item(self, run_id, flow, item_id, folder, payload: dict) -> None:
+        self.db.execute("INSERT INTO items (run_id, flow, item_id, folder, payload) VALUES (?,?,?,?,?)",
+                        (run_id, flow, item_id, self._rel(folder), json.dumps(payload)))
 
     def claim_item(self, run_id, item_id) -> bool:
         """One conditional update: whoever changes the row has the item."""

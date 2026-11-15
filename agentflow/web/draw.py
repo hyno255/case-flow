@@ -1,11 +1,11 @@
 """A flow drawn from its compiled graph: boxes and arrows with every position worked out here, so the template only draws.
 
 One column, top to bottom: the source the flow accepts (with when it is fetched and which items are taken), each stage
-in the order written, then the report. A pass edge is a solid arrow,
+in the order written, then the run's output. A pass edge is a solid arrow,
 a fail edge a dashed one: a loop at the right of the stage when it tries again itself, an arc up the left side when
 `on_fail` names an earlier stage. A pass edge that skips stages arcs down the left side.
 """
-from ..graph import END, compile_flow, stage_by, validated
+from agentflow.plugins.graph import END, compile_flow, stage_by, validated
 from .show import where_text
 
 W, GAP, X0, LINE = 230, 34, 10, 15   # box width, space between boxes, margin, height of a line of text
@@ -18,7 +18,7 @@ def _cut(text, n: int = 32) -> str:
 
 
 def graph(flow: dict, limits: dict, source: dict | None = None, stats: dict | None = None, base: str | None = "") -> dict:
-    """`limits` are the ones the flow runs under (for a stage's tries). `source` is the flow's source as loaded (for the file it writes). `stats` adds a run's numbers: by stage id, or ":end" for the report,
+    """`limits` are the ones the flow runs under (for a stage's tries). `source` is the flow's source as loaded (for the file it writes). `stats` adds a run's numbers: by stage id, or ":end" for the run's output,
     {state, lines, href}. `base` goes before each stage's `#stage-<id>` link; None draws the stages without links."""
     g, stats = compile_flow(flow, limits)[0], stats or {}
     order = g.order
@@ -51,7 +51,7 @@ def graph(flow: dict, limits: dict, source: dict | None = None, stats: dict | No
     for i, (sid, s) in enumerate(g.stages.items(), 1):
         checks = " + ".join(filter(None, ["check" if "check" in s else "", "review" if "review" in s or "done_when" in s else ""]))
         node(sid, f"{i} · {'agent' if 'agent' in s else stage_by(s)}", sid, [s.get("run") or s.get("agent"), checks], f"{base}#stage-{sid}" if base is not None else "")
-    node(":end", "end", "report", ["report/index.html"])
+    node(":end", "end", "output", [flow.get("finish")])
     at = {n["id"]: n for n in nodes}
     at[END] = at[":end"]
     mid = left + W / 2

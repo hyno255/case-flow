@@ -4,7 +4,7 @@ Each script runs in its own process group, behind guard.py. The group is stopped
 its own limit, when the item runs out of time, when the run is cancelled, and when the engine goes away.
 
 The engine runs inside one container image (see Dockerfile), and that container is what separates scripts from
-the machine it runs on. Inside it a script is a plain child process: it is given only the secrets its plugin was granted.
+the machine it runs on. Inside it a script is a plain child process: it sees what the engine tells it, and none of the engine's keys.
 """
 import asyncio
 import os
@@ -26,7 +26,8 @@ async def run_proc(argv: list[str], cwd: Path, stdin: str = "", env: dict | None
     """Returns (exit code, combined output). Arguments are separate values, never a shell string.
     `timeout` is the script's own limit in seconds; `stop` is asked every `poll` seconds, and when it answers yes the script is
     stopped and the code is STOPPED. A script that is stopped gets `grace` seconds to end by itself. Settings.proc() gives all three."""
-    base = {"PATH": os.environ.get("PATH", ""), "LANG": os.environ.get("LANG", "C.UTF-8")}
+    base = {"PATH": os.pathsep.join(filter(None, [os.environ.get("PATH", ""), str(Path(sys.executable).parent)])),  # so a script can call `agentflow history`
+            "LANG": os.environ.get("LANG", "C.UTF-8")}
     guard_end, engine_end = os.pipe()  # the guard reads its end; ours closes when this process ends, however it ends
     try:
         try:

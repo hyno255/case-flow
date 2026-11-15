@@ -9,9 +9,9 @@
 <span title="{{ c.tip }}">{{ c.text }}</span>
 {%- endmacro %}
 
-{# A path on disk, with a button that copies it. `text` is a shorter way to show it. #}
+{# A path on disk, beside the files it names. `text` is a shorter way to show it; the whole path is the tooltip. #}
 {% macro path(full, text="") -%}
-<span class="path"><code title="{{ full }}">{{ text or full }}</code><button type="button" class="copy" data-copy="{{ full }}" title="Copy the path">copy</button></span>
+<code class="path" title="{{ full }}">{{ text or full }}</code>
 {%- endmacro %}
 
 {# Tabs are pages of their own. `keys` are the tabs' names; the first one lives at `base` itself. #}
@@ -60,11 +60,6 @@
 <span class="pill {{ h.pill }}" title="{% if h.at %}{{ h.detail }} · checked {{ h.at }}{% else %}checked when the server starts, every five minutes, and when asked{% endif %}">{{ h.state }}</span>{% if h.old %} <small title="no server has checked it since">as of {{ h.at }}</small>{% endif %}
 {%- endmacro %}
 
-{# The secrets a plugin's scripts were granted, by name. #}
-{% macro secrets(list) -%}
-{% for s in list %}<code>{{ s.name }}</code> {{ pill("set" if s.set else "not set", "done" if s.set else "hold") }} {% else %}<span title="its scripts see no secret">none</span>{% endfor %}
-{%- endmacro %}
-
 {# How a run's items stand, as small counts. #}
 {% macro counts(list) -%}
 <span class="counts">{% for c in list %}<span class="{{ c.pill }}">{{ c.n }} {{ c.label }}</span>{% endfor %}</span>
@@ -77,11 +72,11 @@
     <tbody>
     {% for r in runs %}
       <tr>
-        <td class="name"><a href="/runs/{{ r.id }}">{{ r.id }}</a>{% if r.trial %} {{ pill("trial", "wait", "one item, to try the flow; it does not count as done") }}{% endif %}</td>
+        <td class="name"><a href="/runs/{{ r.id }}">{{ r.id }}</a>{% if r.trial %} {{ pill("trial", "wait", "one item, to try the flow") }}{% endif %}</td>
         {% if with_flow %}<td><a href="/flows/{{ r.flow }}">{{ r.flow }}</a></td>{% endif %}
         <td class="nw">{{ r.started }} <small>{{ r.by }}</small></td><td>{{ pill(r.status, r.pill) }}</td><td>{{ counts(r.counts) }}</td>
         <td class="r">{{ cost(r.cost) }}</td><td class="r">{{ r.time }}</td>
-        <td>{% if r.report %}<a href="{{ r.report }}" target="_blank" rel="noopener">report</a>{% else %}<span title="the report is written when the run ends">—</span>{% endif %}</td>
+        <td>{% if r.output %}<a href="{{ r.output }}" target="_blank" rel="noopener">open</a>{% else %}<span title="the flow wrote no index.html in this run's output folder">—</span>{% endif %}</td>
       </tr>
     {% else %}
       <tr><td colspan="{{ 8 if with_flow else 7 }}" class="none">No runs yet.</td></tr>

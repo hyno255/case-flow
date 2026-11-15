@@ -8,8 +8,7 @@
 {% block live %}{% if v.tab == "runs" %} data-events="/api/events?after={{ v.seq }}"{% endif %}{% endblock %}
 {% block actions %}
 {% if v.can_run %}
-<button type="button" data-post="/api/flows/{{ v.name }}/run" data-body='{"force": true}' data-confirm="Run {{ v.name }} for every item, also the ones already done?" title="every item again, also the ones already done and unchanged">Run all again</button>
-<button type="button" class="primary" data-post="/api/flows/{{ v.name }}/run" data-body='{"force": false}' data-confirm="Run {{ v.name }} now?" title="fetch {{ v.source }} now and run this flow; items already done and unchanged are carried over">Run</button>
+<button type="button" class="primary" data-post="/api/flows/{{ v.name }}/run" data-confirm="Run {{ v.name }} now?" title="fetch {{ v.source }} now and run this flow over every item it accepts">Run</button>
 {% endif %}
 {% endblock %}
 {% block tabs %}{{ ui.tabs("/flows/" ~ v.name, v.tabs, v.tab) }}{% endblock %}

@@ -35,6 +35,3 @@ limits:                       # what one run may use; a flow's own `limits` wins
 # engine: {health_every_seconds: 600, stale_after_seconds: 120}
 # show: {rows: 100}
 
-grants: {}                    # the secrets a plugin's scripts may see, by variable name; a script sees no other, e.g.
-#  sources/security-tickets:
-#    secrets: [TRACKER_TOKEN]

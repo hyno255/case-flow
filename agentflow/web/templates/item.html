@@ -4,38 +4,21 @@
 {% import "_files.html" as files %}
 {% set base = "/runs/" ~ v.run ~ "/items/" ~ v.id %}
 {% block title %}{{ v.id }} · {{ v.run }} · agentflow{% endblock %}
-{% block live %} data-seq="{{ v.seq }}"{% if v.live and v.tab != "log" %} data-events="/api/events?run={{ v.origin }}&item={{ v.id }}&after={{ v.seq }}"{% endif %}{% endblock %}
+{% block live %} data-seq="{{ v.seq }}"{% if v.live and v.tab != "log" %} data-events="/api/events?run={{ v.run }}&item={{ v.id }}&after={{ v.seq }}"{% endif %}{% endblock %}
 {% block crumbs %}<a href="/">Runs</a><a href="/runs/{{ v.run }}">{{ v.run }}</a>{% endblock %}
 {% block heading %}{{ v.id }} {{ ui.pill(v.status, v.pill) }}{% if v.title %} <small>{{ v.title }}</small>{% endif %}{% endblock %}
-{% block actions %}
-{% if v.retry_from %}<button type="button" data-post="/api/runs/{{ v.run }}/items/{{ v.id }}/retry" data-confirm="Run {{ v.id }} again from {{ v.retry_from }}, as a new run?"
-        title="a new run of this one item, with the plugin files as they are now">Retry from {{ v.retry_from }}</button>{% endif %}
-{% if v.report %}<a class="button" href="{{ v.report }}" target="_blank" rel="noopener">Open report</a>{% endif %}
-{% endblock %}
 {% block head %}
+{% if v.reason and v.ended_as != "done" %}<p class="alert">{{ v.reason }}</p>{% endif %}
 <dl class="metrics">
-  {% if v.carried_from %}<div><dt>Carried from</dt><dd><a href="/runs/{{ v.carried_from }}/items/{{ v.id }}">{{ v.carried_from }}</a> {{ ui.pill(v.carried.status, v.carried.pill) }}</dd></div>{% endif %}
-  {% if v.retry_of %}<div><dt>Retry of</dt><dd><a href="/runs/{{ v.retry_of }}/items/{{ v.id }}">{{ v.retry_of }}</a> <small>from {{ v.from_stage }}</small></dd></div>{% endif %}
   <div><dt>Stage</dt><dd>{{ v.stage or "—" }}</dd></div>
   <div><dt>Tokens</dt><dd>{{ v.tokens | num }}</dd></div>
   <div><dt>Cost</dt><dd>{{ ui.cost(v.cost) }}</dd></div>
   <div><dt>Time</dt><dd>{{ v.time or "—" }}</dd></div>
-  {% if v.retries %}<div><dt>Retried in</dt><dd>{% for r in v.retries %}<a href="/runs/{{ r.run }}/items/{{ v.id }}">{{ r.run }}</a> <small>from {{ r.from_stage }}</small> {% endfor %}</dd></div>{% endif %}
-  <div class="wide"><dt>Work folder</dt><dd>{{ ui.path(v.folder) }}</dd></div>
 </dl>
 {% endblock %}
-{% block tabs %}{{ ui.tabs(base, ["output", "trace", "files", "log"], v.tab) }}{% endblock %}
+{% block tabs %}{{ ui.tabs(base, ["files", "trace", "log"], v.tab) }}{% endblock %}
 {% block main %}
-{% if v.tab == "output" %}
-{% if v.reason and v.ended_as != "done" %}<p class="alert">{{ v.reason }}</p>{% endif %}
-{% if v.report_html %}
-<p>{{ ui.path(v.report_md) }}{% if v.report %} <a href="{{ v.report }}" target="_blank" rel="noopener">html page</a>{% endif %}</p>
-<div class="report prose">{{ v.report_html | safe }}</div>
-{% else %}
-<p class="none">No report.md.</p>
-{% endif %}
-{% elif v.tab == "trace" %}
-{% if v.retry_of %}<p class="none">A retry from {{ v.from_stage }}. What ran before it is in <a href="/runs/{{ v.retry_of }}/items/{{ v.id }}/trace">{{ v.retry_of }}</a>.</p>{% endif %}
+{% if v.tab == "trace" %}
 {{ trace.view(v.trace, v.span, ("item", "stage", "try")) }}
 {% elif v.tab == "files" %}
 {{ files.browser(v, base ~ "/files") }}
@@ -48,7 +31,7 @@
     <label for="log-find">Containing</label> <input id="log-find" type="search" placeholder="any text">
     <label><input id="log-calls" type="checkbox" checked> model and tool calls</label>
   </p>
-  <ol id="log" class="log" data-who='{{ v.who | tojson }}' data-events="/api/events?run={{ v.origin }}&item={{ v.id }}&after=0{% if not v.live %}&follow=false{% endif %}" aria-live="polite"></ol>
+  <ol id="log" class="log" data-who='{{ v.who | tojson }}' data-events="/api/events?run={{ v.run }}&item={{ v.id }}&after=0{% if not v.live %}&follow=false{% endif %}" aria-live="polite"></ol>
 </main>
 {% endif %}
 {% endblock %}

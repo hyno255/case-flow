@@ -31,6 +31,7 @@ engine:                       # the engine's own timings, in seconds
 
 show:                         # how much the pages and the command line show
   rows: 50                    # rows in a list of runs or fetches
+  history_rows: 50            # earlier results `agentflow history` gives a flow in one answer
   line_chars: 200             # of a value in one line of a log or a table
   label_chars: 40             # the longest text value used in an item's title
   fact_chars: 400             # of a value shown as a fact in the trace

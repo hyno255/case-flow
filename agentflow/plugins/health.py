@@ -3,21 +3,21 @@ when it starts and lists its tools. The server checks every tool when it starts 
 ask for a check; the last answer is kept in the store, so every page can show it without running anything."""
 import asyncio
 
-from .agents import plugin_tool
-from .plugins import installed
-from .procs import run_proc
-from .store import now
+from agentflow.workers.agents import plugin_tool
+from agentflow.plugins.registry import installed
+from agentflow.workers.procs import run_proc
+from agentflow.records.store import now
 
 
 async def tool_health(settings, live, name: str) -> tuple[bool, str]:
-    """(healthy, one line saying why). The check gets the secrets the tool was granted, as a real call does."""
+    """(healthy, one line saying why)."""
     try:
         errs = live.check_tool(name)
     except Exception as e:
         errs = [f"{type(e).__name__}: {e}"]
     if errs:
         return False, f"tool.yaml: {errs[0]}"
-    spec, folder, env = live.tool(name), live.dir("tools", name), settings.secrets_for(f"tools/{name}")
+    spec, folder, env = live.tool(name), live.dir("tools", name), {}
     seconds, line = settings.engine["health_seconds"], settings.show["line_chars"]
     if "mcp" in spec:
         try:

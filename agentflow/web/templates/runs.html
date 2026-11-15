@@ -13,7 +13,7 @@
       {% for s in v.sources %}<a class="chip" href="/sources/{{ s }}">{{ s }}</a> {% else %}<a href="/sources">None yet</a>{% endfor %}</li>
   <li><b>A flow</b> accepts a source and takes each item through its stages.
       {% for f in v.flows %}<a class="chip" href="/flows/{{ f }}">{{ f }}</a> {% else %}<a href="/flows">None yet</a>{% endfor %}</li>
-  <li><b>A run</b> starts from the flow's page, with Run or its schedule, and ends with a report. No runs yet.</li>
+  <li><b>A run</b> starts from the flow's page, with Run or its schedule. No runs yet.</li>
 </ol>
 {% endif %}
 {% endblock %}

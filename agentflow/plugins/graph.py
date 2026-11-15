@@ -63,7 +63,7 @@ class Graph:
 
     def position(self, last: dict | None, rejected: int = 0) -> str:
         """Where an item stands, from its latest try (`stage`, `outcome`) and how often that stage was rejected.
-        This is how a resumed or retried item is put back on the graph: from stored facts, not a saved pointer."""
+        This is how a resumed item is put back on the graph: from stored facts, not a saved pointer."""
         if last is None or last["stage"] not in self.stages:
             return self.start
         stage = last["stage"]
@@ -72,10 +72,6 @@ class Graph:
         if last["outcome"] == "rejected" and rejected < self.tries(stage):
             return self.after(stage, "fail")
         return stage  # cut short, failed, asked for a person, or out of tries: this stage again
-
-    def before(self, stage: str) -> list[str]:
-        """The stages written before one, which a retry starting there keeps."""
-        return self.order[:self.order.index(stage)] if stage in self.stages else []
 
 
 def compile_flow(flow: dict, limits: dict) -> tuple[Graph, list[str]]:

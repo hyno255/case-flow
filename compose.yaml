@@ -10,10 +10,10 @@ services:
     environment:
       TZ: ${TZ:-UTC}                    # schedules such as "weekdays 07:00" are read in this time zone
     env_file:
-      - path: .env                      # model keys, and the secrets granted to plugins
+      - path: .env                      # model keys
         required: false
     volumes:
       - ./agentflow.yaml:/work/agentflow.yaml:ro
       - ./plugins:/work/plugins:ro      # flows, agents, tools (scripts and MCP servers), sources
-      - ./data:/work/data               # the database, fetches, runs and their reports
+      - ./data:/work/data               # the database, fetches and runs
       # - ~/code/product:/mnt/product:ro   # any other folder your scripts read

@@ -36,12 +36,6 @@
     </table>
   </section>
   {% endif %}
-  {% if v.grants is defined %}
-  <section class="card">
-    <h2>Granted to its script</h2>
-    <table class="kv"><tr><th>secrets</th><td>{{ ui.secrets(v.grants) }}</td></tr></table>
-  </section>
-  {% endif %}
   {% if v.kind != "sources" %}
   <section class="card">
     <h2>Used by</h2>

@@ -1,6 +1,6 @@
 """The state of a run, an item and a try, and the words for each.
 
-Worked out from stored facts in this one place, so the command line, the pages, the trace and the report
+Worked out from stored facts in this one place, so the command line, the pages and the trace
 cannot say different things about the same run.
 """
 import time
@@ -9,12 +9,11 @@ import time
 ENDINGS = {  # how an item can end
     "done": ("done", "done", "ok"), "needs_person": ("needs a person", "hold", "hold"), "failed": ("failed", "bad", "bad"),
     "timed_out": ("timed out", "bad", "bad"), "over_budget": ("stopped at cost cap", "bad", "bad"),
-    "cancelled": ("cancelled", "wait", "cut"), "carried_over": ("carried over", "wait", "")}
+    "cancelled": ("cancelled", "wait", "cut")}
 OUTCOMES = {  # how a try can end; "done" means the stage's work is done and its validation is not
     "passed": ("passed", "done", "ok"), "rejected": ("not accepted", "hold", "fail"), "asked_for_person": ("asked for a person", "hold", "hold"),
     "error": ("failed", "bad", "bad"), "interrupted": ("interrupted", "bad", "cut"), "timed_out": ("timed out", "bad", "cut"),
     "cancelled": ("cancelled", "wait", "cut"), "done": ("validating", "run", "")}
-TRIAGED = ("done", "needs_person")  # endings that count as "already looked at" for carry-over
 
 
 def label(table: dict, name: str | None) -> str:
@@ -24,7 +23,7 @@ def label(table: dict, name: str | None) -> str:
 def is_stale(run, stale_after: float) -> bool:
     """True when a run has not ended and its process has given no sign of life for `stale_after` seconds
     (engine.stale_after_seconds in the settings; generous on purpose)."""
-    return run["ended"] is None and (run["beat"] is None or time.time() - run["beat"] > stale_after)
+    return run["ended"] is None and time.time() - run["beat"] > stale_after
 
 
 def run_status(run, stale_after: float) -> tuple[str, str]:

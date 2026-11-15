@@ -8,7 +8,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from agentflow import trace
+from agentflow.records import trace
 from agentflow.settings import Settings
 from support import CHANGE, ROOT, Home, make_app
 
@@ -21,8 +21,8 @@ DESIGN_PAGES = ["/flows", "/flows/vuln-triage", "/flows/vuln-triage/files", "/fl
 
 def run_pages(run_id: str, items=ITEMS) -> list[str]:
     """Every page and tab of a run and of its items."""
-    urls = [f"/runs/{run_id}{tab}" for tab in ("", "/trace", "/log", "/flow")]
-    return urls + [f"/runs/{run_id}/items/{i}{tab}" for i in items for tab in ("", "/trace", "/files", "/log")]
+    urls = [f"/runs/{run_id}{tab}" for tab in ("", "/output", "/trace", "/log", "/flow")]
+    return urls + [f"/runs/{run_id}/items/{i}{tab}" for i in items for tab in ("", "/trace", "/log")]
 
 
 def spans(view: dict, kind: str | None = None) -> list[dict]:
@@ -37,7 +37,7 @@ class Site(Home):
         self.app = make_app(self.settings, self.store)
 
     def run_once(self, c) -> str:
-        started = c.post("/api/flows/vuln-triage/run", json={"force": False}, headers=CHANGE)  # a run is started from its flow
+        started = c.post("/api/flows/vuln-triage/run", headers=CHANGE)  # a run is started from its flow
         self.assertEqual((started.status_code, started.json()["go"]), (202, "/flows/vuln-triage/runs"))
         return self.finished_run(c)
 
@@ -74,18 +74,19 @@ class Runs(Site):
             self.assertIn('<a href="/" aria-current="page">Runs', home)
             self.assertIn('<a href="/flows" aria-current="page">Flows', c.get("/flows/vuln-triage/files").text)
 
-            # the list of runs: counts, cost, and the report to open
+            # the list of runs: counts, cost, and the flow's output to open
             row = c.get("/api/runs").json()[0]
             self.assertEqual([(k["n"], k["label"]) for k in row["counts"]], [(2, "done"), (2, "needs a person")])
             self.assertEqual(row["cost"]["text"], "$0")  # the stand-in is free, which is known
-            for text in (run_id, "2 done", "2 needs a person", f'href="/runs/{run_id}/report/index.html"'):
+            for text in (run_id, "2 done", "2 needs a person", f'href="/runs/{run_id}/output/index.html"'):
                 self.assertIn(text, home)
             # the list of runs starts nothing: there may be many flows, and each is started from its own page
             for page in (home, c.get("/sources").text, c.get("/sources/security-tickets").text, c.get("/flows").text):
                 self.assertNotIn("/run\"", page)
             flow_page = c.get("/flows/vuln-triage").text
-            for text in ('data-post="/api/flows/vuln-triage/run"', '{"force": true}', ">Run all again<", ">Run<"):
+            for text in ('data-post="/api/flows/vuln-triage/run"', ">Run<"):
                 self.assertIn(text, flow_page)
+            self.assertEqual(flow_page.count("/api/flows/vuln-triage/run"), 1)  # one way to run a flow
             for page in (home, flow_page):  # the model is a flow's, a stage's or an agent's, so the sidebar names none
                 self.assertNotIn("gpt-6-luna", page.split("</nav>")[0])
                 self.assertNotIn("scripted stand-in", page.split("</nav>")[0])
@@ -101,32 +102,39 @@ class Runs(Site):
             page = c.get(f"/runs/{run_id}").text
             for item in run["items"]:
                 self.assertTrue(os.path.isdir(item["folder"]))
-                # each row opens the item's report in a new tab and gives the work folder to copy
-                self.assertIn(f'<a href="/runs/{run_id}/report/{item["id"]}.html" target="_blank"', page)
-                self.assertIn(f'data-copy="{item["folder"]}"', page)
-                self.assertIn(f'>items/{item["id"]}</code>', page)  # from the run folder; the copy button holds the whole path
+                # each row names the work folder from the run folder, with the whole path in its tooltip
+                self.assertIn(f'<code class="path" title="{item["folder"]}">items/{item["id"]}</code>', page)
             self.assertIn(run["items"][2]["reason"], page)  # why an item is not done is in its row, in full
             self.assertIn("candidates.json shows no release", run["items"][2]["reason"])
-            for text in ("Open report", run["snapshot"], "of $2.00"):
+            for text in (run["snapshot"], "of $2.00"):
                 self.assertIn(text, page)
+            self.assertNotIn(run["folder"], page.split("<main>")[0])  # a page's head names no folder
+            for folder in (self.settings.data, self.settings.plugins, self.settings.home / "agentflow.yaml"):
+                self.assertIn(f'<code class="path" title="{folder}">', c.get("/settings").text)
+
+            # the Output tab lists what the flow put in the run's output folder; the engine wrote none of it
+            out = c.get(f"/api/runs/{run_id}/output").json()
+            self.assertEqual([f["path"] for f in out["files"]], ["SEC-1042.html", "SEC-1043.html", "SEC-1044.html", "SEC-1045.html", "index.html"])
+            self.assertEqual((out["finish"], out["files"][0]["href"], out["more"]), ("scripts/report.py", f"/runs/{run_id}/output/SEC-1042.html", 0))
+            self.assertIn(f'<a href="/runs/{run_id}/output/index.html" target="_blank"', c.get(f"/runs/{run_id}/output").text)
 
             # the flow as this run saw it, with what the run did at each stage
             nodes = {n["id"]: n for n in c.get(f"/api/runs/{run_id}/flow").json()["graph"]["nodes"]}
             self.assertEqual(list(nodes), [":source", "gather", "analyse", "fix", "report", ":end"])
+            self.assertEqual(nodes[":end"]["lines"], ["scripts/report.py", "5 files"])
             self.assertEqual((nodes["analyse"]["state"], nodes["analyse"]["lines"][-2:]), ("done", ["3 passed", "7 tries"]))  # SEC-1045 asked for a person at analyse
-            self.assertEqual((nodes[":end"]["state"], nodes[":end"]["href"]), ("done", f"/runs/{run_id}/report/index.html"))  # the report is where a run ends
+            self.assertEqual((nodes[":end"]["state"], nodes[":end"]["href"]), ("done", f"/runs/{run_id}/output"))  # a run ends at its output folder
             stages = c.get(f"/api/runs/{run_id}/flow").json()["stages"]
             self.assertEqual([(s["id"], s["by"], s["passed"], s["tries"], s["now"]) for s in stages][:2],
                              [("gather", "script scripts/gather.sh", 4, 4, 0), ("analyse", "agent origin-analyst", 3, 7, 0)])
             self.assertIn("<svg", c.get(f"/runs/{run_id}/flow").text)
 
-            # an item: its report, where that is, and why it stopped
+            # an item: its files, and why it stopped. The engine knows no file of a flow by name and renders none
             done = c.get(f"/runs/{run_id}/items/SEC-1042").text
-            for text in ("Raise acme-http", "/items/SEC-1042/report.md", f'href="/runs/{run_id}/report/SEC-1042.html"', "Retry from gather"):
+            for text in ("files?file=report.md", "/items/SEC-1042/base-sbom.json"):
                 self.assertIn(text, done)
-            held = c.get(f"/runs/{run_id}/items/SEC-1045").text
-            for text in ("No report.md.", "is in neither dependency-tree.json nor image-sbom.json", "Retry from analyse"):
-                self.assertIn(text, held)
+            for tab in ("", "/trace"):
+                self.assertIn('<p class="alert">libexample-png is in neither dependency-tree.json nor image-sbom.json', c.get(f"/runs/{run_id}/items/SEC-1045{tab}").text)
 
             # a finished run's pages hold no stream open; the log replays and ends
             self.assertNotIn("data-events", c.get(f"/runs/{run_id}/trace").text)
@@ -140,7 +148,7 @@ class Runs(Site):
             run = c.get(f"/api/runs/{run_id}/trace").json()
             root = run["trace"]["root"]
             self.assertEqual([(s["kind"], s["name"]) for s in root["children"][:5]], [("fetch", "security-tickets")] + [("item", i) for i in ITEMS])
-            self.assertEqual([s["name"] for s in root["children"] if s["kind"] == "mark"], ["report written"])  # the report is the output; nothing is sent after it
+            self.assertEqual([s["name"] for s in root["children"] if s["kind"] == "mark"], ["finish script"])  # the flow's own script makes the output; the engine sends nothing anywhere
             for s in spans(run):  # every bar sits on the line, and no part begins before the run or ends after it
                 self.assertTrue(0 <= s["left"] <= 100 and 0 <= s["width"] and s["left"] + s["width"] <= 100.01, s["id"])
                 self.assertTrue(root["start"] - 0.001 <= s["start"] <= s["end"] <= root["end"] + 0.001, s["id"])
@@ -224,9 +232,8 @@ class Runs(Site):
             self.assertIn(f'data-events="/api/events?run={run_id}&after=0"', log)
             flow = {n["id"]: n for n in c.get(f"/api/runs/{run_id}/flow").json()["graph"]["nodes"]}
             self.assertEqual((flow["report"]["state"], flow["report"]["lines"][-2]), ("now", "1 passed · 1 running"))
-            self.assertEqual(c.get(f"/api/runs/{run_id}/items/SEC-1042").json()["retry_from"], "")  # not ended: nothing to retry yet
 
-    def test_files_reports_and_the_event_stream(self):
+    def test_files_output_and_the_event_stream(self):
         with TestClient(self.app) as c:
             run_id = self.run_once(c)
             base = f"/runs/{run_id}/items/SEC-1042"
@@ -236,7 +243,7 @@ class Runs(Site):
             tree = {r["name"]: r for r in view["tree"]}
             self.assertEqual([n for n, r in tree.items() if "children" in r], ["attempts", "verdicts"])
             self.assertTrue(tree["attempts"]["engine"] and tree["events.jsonl"]["engine"] and not tree["origin.md"]["engine"])
-            self.assertEqual(view["file"]["path"], "report.md")
+            self.assertEqual(view["file"]["path"], "base-sbom.json")  # the first file: the engine prefers none
             page = c.get(f"{base}/files", params={"file": "verdicts/analyse-1.md"}).text
             for text in (f'href="{base}/files?file=origin.md"', f'href="{base}/files?file=verdicts/analyse-1.md" aria-current="true"', 'title="written by the engine',
                          "<details data-id=\"dir:verdicts\" open>", "cites no file", f'href="{base}/files/verdicts/analyse-1.md"'):
@@ -253,17 +260,20 @@ class Runs(Site):
             self.assertIn("fail", c.get(f"{base}/files/verdicts/analyse-1.md").text)
             for url in (f"{base}/files/%2e%2e/%2e%2e/%2e%2e/%2e%2e/agentflow.yaml", f"{base}/files/%2Fetc%2Fhosts", f"{base}/files/nope.txt",
                         "/plugins/flows/vuln-triage/files/%2e%2e/%2e%2e/%2e%2e/agentflow.yaml", "/plugins/flows/%2e%2e/files/agentflow.yaml",
-                        "/plugins/secrets/vuln-triage/files/flow.yaml", "/plugins/flows/vuln-triage/files/nope.txt"):
+                        "/plugins/nothing/vuln-triage/files/flow.yaml", "/plugins/flows/vuln-triage/files/nope.txt"):
                 self.assertIn(c.get(url).status_code, (400, 404), url)
             shown = c.get("/plugins/flows/vuln-triage/files/flow.yaml")
             self.assertTrue(shown.headers["content-type"].startswith("text/plain"))
             self.assertIn("source: security-tickets", shown.text)
 
-            # report pages are the run's own html, and nothing else is served from there
-            self.assertEqual(c.get(f"/runs/{run_id}/report/index.html").status_code, 200)
-            self.assertTrue(c.get(f"/runs/{run_id}/report/SEC-1042.html").headers["content-type"].startswith("text/html"))
-            for name in ("..%2f..%2fagentflow.db", "nope.html", ".html", "index.htm"):
-                self.assertEqual(c.get(f"/runs/{run_id}/report/{name}").status_code, 404, name)
+            # the run's output folder is served as the flow wrote it, sandboxed, and nothing else is served from there
+            index = c.get(f"/runs/{run_id}/output/index.html")
+            self.assertEqual((index.status_code, index.headers["content-security-policy"]), (200, "sandbox allow-scripts allow-popups"))
+            self.assertTrue(index.headers["content-type"].startswith("text/html"))
+            self.assertIn('href="SEC-1042.html"', index.text)
+            self.assertIn("Raise acme-http", c.get(f"/runs/{run_id}/output/SEC-1042.html").text)
+            for name in ("..%2f..%2fdb%2fagentflow.db", "%2e%2e/items/SEC-1042/fix.md", "nope.html"):
+                self.assertIn(c.get(f"/runs/{run_id}/output/{name}").status_code, (400, 404), name)
 
             # the event stream replays from a sequence number
             def events(query: str) -> list[dict]:
@@ -276,32 +286,6 @@ class Runs(Site):
             only = events("&item=SEC-1045")
             self.assertEqual({e["item"] for e in only}, {"SEC-1045"})
             self.assertIn("person_asked", [e["type"] for e in only])
-
-    def test_a_second_run_carries_everything_over(self):
-        with TestClient(self.app) as c:
-            first = self.run_once(c)
-            c.post("/api/flows/vuln-triage/run", json={"force": False}, headers=CHANGE)
-            for _ in range(100):
-                runs = c.get("/api/runs").json()
-                if len(runs) == 2 and runs[0]["status"] == "finished":
-                    break
-                time.sleep(0.1)
-            second = runs[0]["id"]
-            self.assertEqual([(k["n"], k["label"]) for k in runs[0]["counts"]], [(4, "carried over")])
-            self.assertEqual(runs[0]["cost"]["text"], "—")  # nothing was spent, and the cell does not pretend to know more
-            row = c.get(f"/api/runs/{second}").json()["items"][0]
-            self.assertEqual((row["carried_from"], row["cost"]["tip"]), (first, "carried over: nothing was spent in this run"))
-            self.assertIn(f"/{os.path.basename(c.get(f'/api/runs/{first}').json()['folder'])}/items/SEC-1042", row["folder"])  # the folder that holds the work
-            # the item shows where it was carried from, that run's result, and that run's work
-            carried = c.get(f"/api/runs/{second}/items/SEC-1044").json()
-            self.assertEqual((carried["carried_from"], carried["origin"], carried["carried"]["status"], carried["retry_from"]), (first, first, "needs a person", ""))
-            page = c.get(f"/runs/{second}/items/SEC-1042").text
-            for text in ("Carried from", f'href="/runs/{first}/items/SEC-1042"', "Raise acme-http"):
-                self.assertIn(text, page)
-            self.assertNotIn("Retry from", page)
-            for url in run_pages(second):
-                self.assertEqual(c.get(url).status_code, 200, url)
-            self.assertEqual(c.get(f"/api/runs/{second}/items/SEC-1042/trace").json()["trace"]["root"]["children"][0]["name"], "gather")
 
     def test_a_cost_that_was_not_recorded_is_a_dash(self):
         with TestClient(self.app) as c:
@@ -326,7 +310,7 @@ class Changes(Site):
     def test_changes_need_the_header(self):
         with TestClient(self.app) as c:
             run_id = self.run_once(c)
-            for url in ("/api/flows/vuln-triage/run", f"/api/runs/{run_id}/resume", f"/api/runs/{run_id}/cancel", f"/api/runs/{run_id}/items/SEC-1044/retry",
+            for url in ("/api/flows/vuln-triage/run", f"/api/runs/{run_id}/resume", f"/api/runs/{run_id}/cancel",
                         "/api/flows/vuln-triage/schedule", "/api/tools/health", "/api/tools/sbom-query/health"):
                 self.assertEqual(c.post(url, json={}).status_code, 403, url)  # so a page on another site cannot change anything
             self.assertEqual(len(c.get("/api/runs").json()), 1)
@@ -335,7 +319,6 @@ class Changes(Site):
             self.assertEqual(len(c.get("/api/runs").json()), 1)
             self.assertEqual(c.post(f"/api/runs/{run_id}/resume", headers=CHANGE).status_code, 409)
             self.assertEqual(c.post(f"/api/runs/{run_id}/cancel", headers=CHANGE).status_code, 409)
-            self.assertEqual(c.post(f"/api/runs/{run_id}/items/SEC-9/retry", headers=CHANGE).status_code, 400)
             # a request that arrives under another host name is refused
             self.assertEqual(c.get("/", headers={"Host": "evil.example"}).status_code, 400)
 
@@ -356,7 +339,7 @@ class Changes(Site):
             self.assertEqual(c.post("/api/flows/nope/schedule", json={"enabled": True}, headers=CHANGE).status_code, 400)
 
     def test_a_due_schedule_starts_its_flow(self):
-        from agentflow.schedule import set_schedule
+        from agentflow.engine.schedule import set_schedule
         from agentflow.web import create_app
         set_schedule(self.settings, self.store, "vuln-triage", True)
         self.store.db.execute("UPDATE schedules SET next_due = '2026-11-13T07:00:00'")
@@ -367,14 +350,14 @@ class Changes(Site):
             (fetch,) = c.get("/api/sources/security-tickets/fetches").json()["fetches"]
             self.assertEqual((fetch["by"], fetch["count"], fetch["runs"]), ("schedule", 4, [{"id": run_id, "flow": "vuln-triage"}]))
             self.assertTrue(fetch["folder"].endswith("-1-security-tickets"))
-            self.assertEqual({t["name"]: t["health"]["state"] for t in c.get("/api/tools").json()}, {"deps-why": "ok", "sbom-query": "ok"})  # checked when the server started
+            self.assertEqual({t["name"]: t["health"]["state"] for t in c.get("/api/tools").json()}, {"deps-why": "ok", "history": "ok", "history-file": "ok", "sbom-query": "ok"})  # checked when the server started
 
     def test_tool_health_is_checked_and_shown(self):
         with TestClient(self.app) as c:
             self.assertIn(">not checked<", c.get("/tools").text)
             (self.home / "plugins/tools/deps-why/health.sh").write_text("#!/bin/sh\necho the tree service is down\nexit 1\n")
             rows = {r["tool"]: r for r in c.post("/api/tools/health", headers=CHANGE).json()}
-            self.assertEqual({n: r["ok"] for n, r in rows.items()}, {"deps-why": False, "sbom-query": True})
+            self.assertEqual({n: r["ok"] for n, r in rows.items()}, {"deps-why": False, "history": True, "history-file": True, "sbom-query": True})
             self.assertIn("finds a known package", rows["sbom-query"]["detail"])
             listed = c.get("/tools").text
             for text in (">ok<", ">failing<", "the tree service is down", "Check all"):
@@ -416,7 +399,7 @@ class Design(Site):
             self.assertEqual([(f["name"], f["source"], f["stages"], f["errors"], f["last_run"]) for f in listed["flows"]], [("vuln-triage", "security-tickets", 4, [], None)])
             used = {a["name"]: [(u["stage"], u["as"]) for u in a["used"]] for a in listed["agents"]}
             self.assertEqual(used, {"origin-analyst": [("analyse", "executor")]})  # the engine's own two agents are not plugins
-            self.assertEqual({t["name"]: t["used"] for t in listed["tools"]}, {"deps-why": ["origin-analyst"], "sbom-query": ["origin-analyst"]})
+            self.assertEqual({t["name"]: t["used"] for t in listed["tools"]}, {"deps-why": ["origin-analyst"], "history": [], "history-file": [], "sbom-query": ["origin-analyst"]})
             self.assertEqual(c.get("/api/flows").json(), listed["flows"])
 
             for url, texts in (("/flows", ("vuln-triage", "security-tickets", "weekdays 07:00", ">off<", 'title="this flow has not run"')),
@@ -426,10 +409,9 @@ class Design(Site):
                                ("/agents/origin-analyst", ('href="/tools/deps-why"', "<code>write_file</code>", "vuln-triage · analyse", "executor", "Decides whether")),
                                ("/agents/origin-analyst/method", ("Use deps-why to see", 'href="/agents/origin-analyst/files?file=AGENT.md"')),
                                ("/agents/origin-analyst/files", ("AGENT.md", "tools: [sbom-query, deps-why]")),
-                               ("/tools/sbom-query", ("<code>sbom_file</code>", 'href="/tools/sbom-query/files?file=run.py"', 'href="/agents/origin-analyst"', "vuln-triage · analyse",
-                                                      'title="its scripts see no secret"')),
+                               ("/tools/sbom-query", ("<code>sbom_file</code>", 'href="/tools/sbom-query/files?file=run.py"', 'href="/agents/origin-analyst"', "vuln-triage · analyse")),
                                ("/tools/sbom-query/files?file=run.py", ("#!/usr/bin/env", 'aria-current="true"')),
-                               ("/sources/security-tickets", ('href="/flows/vuln-triage"', 'href="/sources/security-tickets/files?file=fetch.sh"', 'title="its scripts see no secret"',
+                               ("/sources/security-tickets", ('href="/flows/vuln-triage"', 'href="/sources/security-tickets/files?file=fetch.sh"',
                                                              "<code>severity</code>", "every item")),
                                ("/sources/security-tickets/fetches", ("Never fetched.",)),
                                ("/sources/security-tickets/files?file=fixtures/tickets.json", ("SEC-1042", '<details data-id="dir:fixtures" open>'))):
@@ -468,7 +450,7 @@ class Design(Site):
             g = flow["graph"]
             self.assertEqual([(n["kicker"], n["title"]) for n in g["nodes"]],
                              [("source", "security-tickets"), ("1 · script", "gather"), ("2 · agent", "analyse"), ("3 · default agent", "fix"),
-                              ("4 · default agent", "report"), ("end", "report")])
+                              ("4 · default agent", "report"), ("end", "output")])
             edges = [(e["src"], e["dst"], e["on"], e["kind"]) for e in g["edges"]]
             self.assertEqual([e for e in edges if e[2] == "pass"], [(":source", "gather", "pass", "next"), ("gather", "analyse", "pass", "next"), ("analyse", "fix", "pass", "next"),
                                                                      ("fix", "report", "pass", "next"), ("report", ":end", "pass", "next")])
@@ -498,7 +480,7 @@ class Design(Site):
             self.assertEqual((analyse["md"], analyse["md_href"]), ("stages/analyse.md", "/flows/vuln-triage/files?file=stages/analyse.md"))
             config = {r["k"]: r for r in flow["config"]}
             self.assertEqual({k: r["mark"] for k, r in config.items()},  # every limit the flow runs under, none of them its own
-                             {"source": "", "model": "platform default", **{f"limits.{k}": "platform default" for k in self.settings.limits}})
+                             {"source": "", "finish": "", "stand_in": "", "model": "platform default", **{f"limits.{k}": "platform default" for k in self.settings.limits}})
             for text in ('href="/flows/vuln-triage/files?file=stages/fix.md"', "Read origin.md and candidates.json.", 'href="/sources/security-tickets"',
                          '<span class="tag">default</span>', "For each security ticket", 'href="/flows/vuln-triage/files?file=flow.yaml"'):
                 self.assertIn(text, page)
@@ -542,8 +524,6 @@ class Design(Site):
     def test_the_settings_show_names_and_never_a_key(self):
         os.environ["OPENAI_API_KEY"] = "sk-not-for-any-page"
         self.addCleanup(os.environ.pop, "OPENAI_API_KEY", None)
-        with (self.home / "agentflow.yaml").open("a") as f:
-            f.write("grants:\n  sources/security-tickets:\n    secrets: [OPENAI_API_KEY, TRACKER_TOKEN]\n  tools/nope: {}\n")
         settings = Settings(self.home)
         settings.stand_in = True
         with TestClient(make_app(settings, self.store)) as c:
@@ -554,20 +534,15 @@ class Design(Site):
                                                "key_env": "OPENAI_API_KEY", "key_set": True},  # a CLI has its own provider and interface
                                               {"name": "sonnet-cc", "default": False, "runs_on": "claude CLI", "provider": "", "model": "sonnet", "api": "", "reasoning": "",
                                                "key_env": "", "key_set": False}])           # and, with no key named, its own sign-in
-            self.assertEqual(view["grants"][0], {"plugin": "sources/security-tickets", "href": "/sources/security-tickets",
-                                                 "secrets": [{"name": "OPENAI_API_KEY", "set": True}, {"name": "TRACKER_TOKEN", "set": False}]})
-            self.assertEqual(view["errors"], ["grants: 'tools/nope' is not a source, tool or flow in the plugins folder"])
+            self.assertEqual(view["errors"], [])
             numbers = {n["name"]: {r["k"]: (r["v"], r["mark"]) for r in n["rows"]} for n in view["numbers"]}  # every limit, and whether agentflow.yaml sets it
             self.assertEqual(list(numbers), ["limits", "engine", "show"])
             self.assertEqual((numbers["limits"]["script_seconds"], numbers["engine"]["stale_after_seconds"], numbers["show"]["rows"]),
                              (("120", ""), ("60", "default"), ("50", "default")))
             page = c.get("/settings").text
-            for text in ("<code>OPENAI_API_KEY</code>", ">set<", ">not set<", "gpt-6-luna", ">default<", "<code>TRACKER_TOKEN</code>", "cost_per_run_usd", "is not a source, tool or flow",
+            for text in ("<code>OPENAI_API_KEY</code>", ">set<", "gpt-6-luna", ">default<", "cost_per_run_usd",
                          "Engine timings", "heartbeat_seconds", "Shown on pages", "line_chars"):
                 self.assertIn(text, page)
-            source = c.get("/sources/security-tickets").text
-            for text in ("<code>OPENAI_API_KEY</code>", "<code>TRACKER_TOKEN</code>"):
-                self.assertIn(text, source)
             for url in ["/settings", "/sources/security-tickets", "/api/settings", "/api/plugins", "/flows/vuln-triage", "/api/sources/security-tickets"]:
                 self.assertNotIn("sk-not-for-any-page", c.get(url).text, url)
 

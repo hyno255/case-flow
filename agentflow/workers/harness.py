@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .layout import NEEDS_PERSON
-from .procs import STOPPED, run_proc
+from agentflow.records.layout import NEEDS_PERSON
+from agentflow.workers.procs import STOPPED, run_proc
 
 STAND_IN = str(Path(__file__).with_name("stand_in_cli.py"))
 MACHINE = ("HOME", "USER", "LOGNAME", "SHELL", "TMPDIR")  # what a CLI needs of this machine to find its own sign-in and settings
@@ -162,13 +162,13 @@ def _cost(cli: Cli, model: str, found: dict) -> float | None:
 
 
 async def run_cli(settings, model: dict, instructions: str, prompt: str, work: Path, out_file: Path, last_file: Path, env: dict, limits: dict,
-                  commands: list[str] = (), stop=None, on_event=lambda *a, **k: None) -> tuple[str, dict]:
+                  commands: list[str] = (), stop=None, on_event=lambda *a, **k: None, stand_in=None) -> tuple[str, dict]:
     """One try done by the CLI the model entry names. Returns (its last message, what the try used), as run_agent does.
     `out_file` gets everything it printed. The item's time limit and `stop` end it, with everything it started."""
     name = model["harness"]
     cli = CLIS[name]
     if settings.stand_in:
-        argv, own = [sys.executable, "-I", STAND_IN, name, str(last_file)], {}
+        argv, own = [sys.executable, "-I", STAND_IN, name, str(last_file), str(stand_in)], {}  # the flow's stand-in script says what the CLI does
     else:
         argv, own = [cli.program, *cli.args(model["name"], last_file, list(commands))], _env(cli, model)
     last_file.unlink(missing_ok=True)  # the answer has to be this run's

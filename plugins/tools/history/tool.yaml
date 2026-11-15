@@ -1,0 +1,4 @@
+description: How one item ended in earlier runs of this flow, newest first, as JSON. Each row has the run, how the item ended, the reason, and the files in its work folder. Read one of those files with history-file.
+run: ./run.sh
+args: [item_id]
+health: ./health.sh

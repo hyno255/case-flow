@@ -38,7 +38,7 @@ def register(settings, store, when: datetime | None = None) -> dict[str, tuple[s
     """Bring the stored schedules in line with the flow files, and return flow -> (its schedule, its source) for every flow
     that has a schedule and passes its checks. A flow seen for the first time is switched off; a flow whose schedule was
     edited gets its next slot from the new one; a flow that is gone is forgotten."""
-    from .plugins import installed  # plugins.py checks schedules with parse_schedule, so it imports this module
+    from agentflow.plugins.registry import installed  # the registry checks schedules with parse_schedule, so it imports this module
     when = when or datetime.now()
     live, found = installed(settings), {}
     for flow in live.names("flows"):
