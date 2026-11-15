@@ -8,7 +8,7 @@ import shutil
 import time
 from pathlib import Path
 
-from .agents import build_model
+from .agents import check_ready
 from .layout import ENGINE_OWNED, ITEMS
 from .plugins import installed, run_plugins
 from .graph import END
@@ -58,7 +58,7 @@ async def resume_run(settings, store, run_id: str, *, claimed: bool = False, sta
     run = store.run(run_id)
     snap = run_plugins(settings, store, run)
     for spec in snap.models_used(run["flow"]):
-        build_model(settings, spec)  # stop before any work if a model this run uses is not usable
+        check_ready(settings, spec)  # stop before any work if a model this run uses is not usable
     graph = snap.graph(run["flow"])
     todo = []
     for it in store.items(run_id, open_only=True):

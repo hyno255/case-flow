@@ -9,13 +9,14 @@
   <h3>Models</h3>
   <div class="scroll">
     <table>
-      <thead><tr><th>Name</th><th>Provider</th><th>Model</th><th>API</th><th>Reasoning</th><th>Key variable</th></tr></thead>
+      <thead><tr><th>Name</th><th title="The engine's own harness, or a coding CLI on this machine that does a stage's work">Runs on</th><th>Provider</th><th>Model</th><th>API</th><th>Reasoning</th><th>Key variable</th></tr></thead>
       <tbody>
       {% for m in v.models %}
-        <tr><td class="name">{{ m.name }}{% if m.default %} {{ ui.pill("default", "run") }}{% endif %}</td><td>{{ m.provider }}</td><td><code>{{ m.model or "—" }}</code></td><td>{{ m.api }}</td><td>{{ m.reasoning }}</td>
-            <td><code>{{ m.key_env }}</code> {{ ui.pill("set" if m.key_set else "not set", "done" if m.key_set else "hold") }}</td></tr>
+        <tr><td class="name">{{ m.name }}{% if m.default %} {{ ui.pill("default", "run") }}{% endif %}</td><td>{{ m.runs_on }}</td>
+            {% for own in (m.provider, m.api, m.reasoning) %}<td{% if not own %} title="The CLI's own"{% endif %}>{{ own or "—" }}</td>{% if loop.first %}<td><code>{{ m.model or "—" }}</code></td>{% endif %}{% endfor %}
+            <td>{% if m.key_env %}<code>{{ m.key_env }}</code> {{ ui.pill("set" if m.key_set else "not set", "done" if m.key_set else "hold") }}{% else %}the CLI's own sign-in{% endif %}</td></tr>
       {% else %}
-        <tr><td colspan="6" class="none">No models.</td></tr>
+        <tr><td colspan="7" class="none">No models.</td></tr>
       {% endfor %}
       </tbody>
     </table>

@@ -13,7 +13,8 @@ from pathlib import Path
 
 from .agents import CHECKER, DEFAULT_AGENT, Verdict, file_tools, person_tool, run_agent, plugin_tool
 from .graph import END, Graph, stage_by
-from .layout import ATTEMPTS, VERDICTS, prompt_file, verdict_file, visible_files
+from .harness import CliStopped, cli_note, run_cli, tool_commands
+from .layout import ATTEMPTS, NEEDS_PERSON, VERDICTS, asked_file, cli_file, prompt_file, verdict_file, visible_files
 from .procs import DONE_EARLY, STOPPED, run_proc
 
 
@@ -43,15 +44,13 @@ class Ctx:
     def flow_dir(self) -> Path:
         return self.registry.dir("flows", self.flow)
 
+    def told(self) -> dict:
+        """What every script, and a CLI doing a stage, is told: where the flow's files are, which item, whether this is a trial."""
+        return {"AGENTFLOW_FLOW_DIR": str(self.flow_dir.resolve()), "AGENTFLOW_ITEM_ID": self.item_id, **({"AGENTFLOW_TRIAL": "1"} if self.trial else {})}
+
     def env(self, plugin: str) -> dict:
-        """What a script is told: where the flow's files are, which item, whether this is a trial,
-        and only the secrets it was granted. A trial withholds granted secrets."""
-        env = {"AGENTFLOW_FLOW_DIR": str(self.flow_dir.resolve()), "AGENTFLOW_ITEM_ID": self.item_id}
-        if self.trial:
-            env["AGENTFLOW_TRIAL"] = "1"
-        else:
-            env.update(self.settings.secrets_for(plugin))
-        return env
+        """What a script is told, and only the secrets its plugin was granted. A trial withholds granted secrets."""
+        return {**self.told(), **({} if self.trial else self.settings.secrets_for(plugin))}
 
     def cancelled(self) -> bool:
         return self.store.cancel_requested(self.run_id)
@@ -120,18 +119,29 @@ async def _by_script(ctx: Ctx, stage: dict, n: int, attempt: int) -> End:
     return None
 
 
+def _asked_in_file(ctx: Ctx, sid: str, n: int) -> list[str]:
+    """What a CLI asked a person, if it wrote NEEDS_PERSON. The file moves to the engine's folder, so a later try starts without it."""
+    file = ctx.work / NEEDS_PERSON
+    if file.is_symlink() or not file.is_file():
+        return []
+    reason = file.read_text(errors="replace").strip()[:ctx.limits["reason_chars"]]
+    file.replace(ctx.work / asked_file(sid, n))
+    return [reason or f"{NEEDS_PERSON} was written without a reason"]
+
+
 async def _by_agent(ctx: Ctx, stage: dict, n: int, attempt: int, feedback: list[str]) -> End:
-    """Do the stage with its agent, or with the default agent following the stage's own file."""
+    """Do the stage with its agent, or with the default agent following the stage's own file.
+    The engine's own harness runs the model, unless the model picked names a CLI: then the CLI does the work."""
     sid, by = stage["id"], stage_by(stage)
     goal, note = ctx.registry.flow_goal(ctx.flow), ctx.registry.stage_method(ctx.flow, sid)
     if "agent" in stage:
         meta, method = ctx.registry.agent(stage["agent"])
         instructions = (f"{method}\n\nIf you cannot decide from the files, call ask_for_person and stop.\n\n## The flow you are part of\n{goal}"
                         + (f"\n\n## This stage: {sid}\n{note}" if note else ""))
-        extra = [ctx.tool(t) for t in meta.get("tools") or []]
+        names = meta.get("tools") or []
     else:
         instructions = f"{DEFAULT_AGENT}\n\n## The flow you are part of\n{goal}\n\n## Your stage: {sid}\n{note}"
-        extra = []
+        names = []
     prompt = f"Do the stage '{sid}' for item {ctx.item_id}. Your work folder holds: {', '.join(visible_files(ctx.work))}."
     if "done_when" in stage:  # the executor is told up front what the reviewer will judge
         prompt += f"\nThe stage is accepted when: {stage['done_when']}"
@@ -139,11 +149,28 @@ async def _by_agent(ctx: Ctx, stage: dict, n: int, attempt: int, feedback: list[
         prompt += "\n\nEarlier attempts failed validation. Fix these:\n" + "\n".join(feedback)
     (ctx.work / prompt_file(sid, n)).write_text(prompt)  # evidence of what the try was told
     asked: list[str] = []
-    tools = file_tools(ctx.work, True, ctx.limits) + extra + [person_tool(asked)]
+    model = ctx.registry.model_for(ctx.flow, stage, stage.get("agent"))
+    harness = ctx.settings.harness_of(model)
+
+    def report(type_: str, **data) -> None:
+        ctx.emit(sid, type_, n=n, agent=by, **data)
+
     try:
-        _, stats = await run_agent(ctx.settings, instructions, prompt, tools, model=ctx.registry.model_for(ctx.flow, stage, stage.get("agent")), limits=ctx.limits,
-                                   on_event=lambda t, **d: ctx.emit(sid, t, n=n, agent=by, **d))
-    except Exception as e:  # a model or network error: the item fails and the next run takes it again
+        if harness:
+            commands = tool_commands(ctx.registry, names)
+            (ctx.work / NEEDS_PERSON).unlink(missing_ok=True)  # one left by a try that was cut short is not this try's
+            _, stats = await run_cli(ctx.settings, ctx.settings.model(model), f"{instructions}\n\n{cli_note(commands)}", prompt, ctx.work,
+                                     ctx.work / cli_file(sid, n, harness, "jsonl"), ctx.work / cli_file(sid, n, harness, "md"), ctx.told(), ctx.limits,
+                                     [program for _, _, program, _ in commands], stop=ctx.cancelled, on_event=report)
+            asked += _asked_in_file(ctx, sid, n)
+        else:
+            tools = file_tools(ctx.work, True, ctx.limits) + [ctx.tool(t) for t in names] + [person_tool(asked)]
+            _, stats = await run_agent(ctx.settings, instructions, prompt, tools, model=model, limits=ctx.limits, on_event=report)
+    except CliStopped:
+        ctx.store.end_attempt(attempt, "cancelled")
+        ctx.emit(sid, "attempt_cancelled", n=n, script=f"the {harness} CLI")
+        return "cancelled", f"the run was cancelled while the {harness} CLI was working on {sid}; it was stopped"
+    except Exception as e:  # a model, network or CLI error: the item fails and the next run takes it again
         ctx.store.end_attempt(attempt, "error")
         ctx.emit(sid, "attempt_ended", n=n, error=str(e)[:ctx.limits["error_chars"]])
         return "failed", f"{by} could not finish {sid}: {type(e).__name__}: {str(e)[:ctx.limits['error_chars']]}"
@@ -248,7 +275,7 @@ async def run_item(ctx: Ctx, start_at: str | None = None) -> tuple[str, str]:
     async def walk() -> tuple[str, str]:
         at = start_at or ctx.graph.start
         while at != END:
-            if ctx.cancelled():  # between stages; inside one, a running script is stopped and an agent's try finishes
+            if ctx.cancelled():  # between stages; inside one, a running script or CLI is stopped and an agent's try finishes
                 return "cancelled", f"the run was cancelled before stage {at}"
             outcome, reason = await run_stage(ctx, ctx.graph.stages[at])
             if outcome == "passed":

@@ -48,7 +48,7 @@ docker compose run --rm agentflow run vuln-triage --stand-in
 | `.env` | environment | model keys and the secrets named under `grants:` |
 
 A program that a script, a tool or an MCP server calls must be in the image: add it to the `apt-get install` line of the `Dockerfile`
-(for example `nodejs npm` for MCP servers started with `npx`) and build again.
+and build again. `nodejs` and `npm` are already there, with the two coding CLIs a stage's work can be handed to (see below).
 
 The container is the boundary between scripts and your machine. Inside it a script is a plain child process: it can read
 whatever is mounted and reach the network. It is given only the secrets its plugin was granted.
@@ -121,6 +121,41 @@ mcp: [python3, ./server.py]
 
 The server checks every tool when it starts, every five minutes and on request. The Tools page shows the result,
 and a failing tool is named on every flow whose agents use it.
+
+## A stage done by Codex or Claude Code
+
+The engine's own harness runs a stage's agent in its process. A model entry with `harness:` hands the work of a stage to a
+coding CLI on the same machine instead. The engine starts the CLI in the item's work folder with the instructions and the
+prompt on its stdin, waits, and keeps what it printed. The check script and the reviewer then judge the files, as for any other try.
+
+```yaml
+# agentflow.yaml
+models:
+  luna:       {provider: openai, name: gpt-6-luna}                             # the engine's own harness
+  luna-codex: {harness: codex, name: gpt-6-luna, api_key_env: OPENAI_API_KEY}  # Codex, handed this key
+  sonnet-cc:  {harness: claude, name: sonnet}                                  # Claude Code, on its own sign-in
+```
+
+```yaml
+# flow.yaml
+  - id: analyse
+    agent: origin-analyst
+    model: luna-codex          # this stage's work is done by Codex
+```
+
+- `harness` is `codex` or `claude`. With `api_key_env` the CLI is handed that key; without it the CLI uses its own sign-in,
+  which a container does not have.
+- A stage or an agent picks such a model. A flow's own `model:` and a reviewer's cannot, because reviewers run in the engine.
+- The trace shows the CLI's run as one span with its seconds, tokens and cost. Everything the CLI printed is kept as
+  `attempts/<stage>-<try>.<cli>.jsonl` in the item's folder. Claude Code reports its cost; Codex reports tokens, which are priced from the price list.
+- The agent's script tools are named to the CLI as commands. A tool that is an MCP server, or one that was granted secrets,
+  cannot be used on such a stage, and `check` says so.
+- To set an item aside for a person, the CLI writes `needs-person.md`.
+- The item's `minutes_per_item` is the CLI's time limit, and cancelling the run stops it.
+- `--stand-in` starts a scripted CLI in its place: no sign-in, no cost.
+
+`agentflow check` says whether each CLI a model entry names is installed. The image has Codex and Claude Code at fixed versions
+(see the `Dockerfile`).
 
 ## Limits and timings
 

@@ -9,7 +9,7 @@
   <span class="sp-track"><span class="sp-bar k-{{ s.kind }} {{ s.state }}" style="left: {{ s.left }}%; width: {{ s.width }}%"></span></span>
   <span class="sp-num">{{ s.time }}</span>
   <span class="sp-num">{% if s.tokens %}{{ s.tokens | num }}{% endif %}</span>
-  <span class="sp-num" title="{{ s.cost_cell.tip }}">{% if s.model_calls or s.cost_unknown %}{{ s.cost_cell.text }}{% endif %}</span>
+  <span class="sp-num" title="{{ s.cost_cell.tip }}">{% if s.model_calls or s.cli_runs or s.cost_unknown %}{{ s.cost_cell.text }}{% endif %}</span>
 </span>
 {% endmacro %}
 
@@ -32,13 +32,15 @@
     {% if s.who %}<dt>who</dt><dd>{{ s.who }}</dd>{% endif %}
     {% if s.model %}<dt>model</dt><dd>{{ s.model }}</dd>{% endif %}
     {% if s.time %}<dt>duration</dt><dd>{{ s.time }}</dd>{% endif %}
-    {% if s.model_calls or s.cost_unknown %}
-    {% if s.kind != "model" %}<dt>model calls</dt><dd>{{ s.model_calls }}</dd>{% endif %}
+    {% if s.model_calls or s.cli_runs or s.cost_unknown %}
+    {% if s.kind not in ("model", "cli") %}<dt{% if s.cli_runs %} title="Made by the engine. What a CLI called inside its run is not counted."{% endif %}>model calls</dt><dd>{{ s.model_calls }}</dd>{% endif %}
+    {% if s.cli_runs and s.kind != "cli" %}<dt>CLI runs</dt><dd>{{ s.cli_runs }}</dd>{% endif %}
     <dt>tokens</dt><dd>{{ s.tokens_in | num }} in · {{ s.tokens_out | num }} out</dd>
     <dt>cost</dt><dd>{{ s.cost_cell.text }} <small>{{ s.cost_cell.tip }}</small></dd>
     {% endif %}
     {% if s.tool_calls and s.kind != "tool" %}<dt>tool calls</dt><dd>{{ s.tool_calls }}</dd>{% endif %}
     {% for k, val in s.facts %}<dt>{{ k }}</dt><dd>{{ val }}</dd>{% endfor %}
+    {% for k, text, href in s.links %}<dt>{{ k }}</dt><dd><a href="{{ href }}">{{ text }}</a></dd>{% endfor %}
   </dl>
   {% for title, text in s.blocks %}<h3>{{ title }}</h3><pre>{{ text }}</pre>{% endfor %}
 </section>

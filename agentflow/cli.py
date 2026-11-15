@@ -19,6 +19,7 @@ import json
 import time
 
 from .agents import ModelNotReady
+from .harness import CLIS, cli_version
 from .health import tool_health
 from .layout import REPORT
 from .plugins import installed
@@ -43,6 +44,8 @@ def live_printer(line: int):
         elif t == "tool_call":
             args = event["args"] if isinstance(event["args"], str) else json.dumps(event["args"])
             print(f"{who}   {'reviewer ' if event.get('role') else ''}tool {event['tool']} {args[:line]}", flush=True)
+        elif t == "cli_run":
+            print(f"{who}   the {event['harness']} CLI ended after {event['seconds']:.0f}s: {event['said'][:line]}", flush=True)
         elif t == "verdict":
             print(f"{who}   {event['by']}: {'pass' if event['passed'] else 'FAIL'}  {event['reason'][:line]}", flush=True)
         elif t == "person_asked":
@@ -122,7 +125,13 @@ def cmd_check(a, settings: Settings) -> int:
     print()
     for name in settings.models:
         m = settings.model(name)
-        print(f"model    {name}{' (default)' if name == settings.default_model else ''}: {m['provider']} · {m['name']} · api {m['api']} · reasoning {m['reasoning']} · key in {m['api_key_env']}")
+        how = (f"{m['harness']} CLI · {m.get('name')} · {'key in ' + m['api_key_env'] if m.get('api_key_env') else 'its own sign-in'}" if "harness" in m else
+               f"{m['provider']} · {m['name']} · api {m['api']} · reasoning {m['reasoning']} · key in {m['api_key_env']}")
+        print(f"model    {name}{' (default)' if name == settings.default_model else ''}: {how}")
+    for name in sorted({h for h in map(settings.harness_of, settings.models) if h in CLIS}):  # each CLI a model entry names: is it here?
+        ok, detail = asyncio.run(cli_version(settings, name))
+        bad += not ok
+        print(f"harness  {name:<20} {'ok   ' if ok else 'FAIL '}  {detail}")
     for key in settings.grants:
         print(f"grant    {key}: secrets {', '.join(settings.granted(key)) or 'none'}")
     errs = settings.check()

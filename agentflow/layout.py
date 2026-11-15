@@ -6,7 +6,7 @@
         plugins/                  the plugin files exactly as the run first saw them
         items/<item id>/          each item's work folder
             events.jsonl           the engine's record of what happened to this item
-            attempts/             what each try was told
+            attempts/             what each try was told, and what a CLI that did the try printed
             verdicts/             what each validation said
             ...                   the files the stages wrote
         report/                   the rendered report: the run's output
@@ -21,6 +21,7 @@ RUNS, FETCHES = "runs", "fetches"
 PLUGINS, ITEMS, REPORT = "plugins", "items", "report"                     # inside a run folder
 EVENTS, ATTEMPTS, VERDICTS = "events.jsonl", "attempts", "verdicts"            # inside an item's folder
 ENGINE_OWNED = (EVENTS, VERDICTS, ATTEMPTS)                                   # not writable by agents or scripts
+NEEDS_PERSON = "needs-person.md"  # a CLI doing a stage writes this in the item's folder to set the item aside for a person
 
 
 def new_run_folder(data: Path, run_id: str) -> Path:
@@ -34,6 +35,16 @@ def new_fetch_folder(data: Path, source: str, fetch_id: int) -> Path:
 def prompt_file(stage: str, n: int) -> str:
     """Relative to the item's folder: what try `n` of a stage was told."""
     return f"{ATTEMPTS}/{stage}-{n}.prompt.md"
+
+
+def cli_file(stage: str, n: int, harness: str, kind: str) -> str:
+    """What a CLI left of try `n`: everything it printed (kind "jsonl"), or its last message (kind "md")."""
+    return f"{ATTEMPTS}/{stage}-{n}.{harness}.{kind}"
+
+
+def asked_file(stage: str, n: int) -> str:
+    """Where the engine keeps the NEEDS_PERSON file a CLI wrote in try `n`."""
+    return f"{ATTEMPTS}/{stage}-{n}.{NEEDS_PERSON}"
 
 
 def verdict_file(stage: str, n: int) -> str:

@@ -548,8 +548,12 @@ class Design(Site):
         settings.stand_in = True
         with TestClient(make_app(settings, self.store)) as c:
             view = c.get("/api/settings").json()
-            self.assertEqual(view["models"], [{"name": "luna", "default": True, "provider": "openai", "model": "gpt-6-luna", "api": "responses", "reasoning": "low",
-                                               "key_env": "OPENAI_API_KEY", "key_set": True}])
+            self.assertEqual(view["models"], [{"name": "luna", "default": True, "runs_on": "engine", "provider": "openai", "model": "gpt-6-luna", "api": "responses", "reasoning": "low",
+                                               "key_env": "OPENAI_API_KEY", "key_set": True},
+                                              {"name": "luna-codex", "default": False, "runs_on": "codex CLI", "provider": "", "model": "gpt-6-luna", "api": "", "reasoning": "",
+                                               "key_env": "OPENAI_API_KEY", "key_set": True},  # a CLI has its own provider and interface
+                                              {"name": "sonnet-cc", "default": False, "runs_on": "claude CLI", "provider": "", "model": "sonnet", "api": "", "reasoning": "",
+                                               "key_env": "", "key_set": False}])           # and, with no key named, its own sign-in
             self.assertEqual(view["grants"][0], {"plugin": "sources/security-tickets", "href": "/sources/security-tickets",
                                                  "secrets": [{"name": "OPENAI_API_KEY", "set": True}, {"name": "TRACKER_TOKEN", "set": False}]})
             self.assertEqual(view["errors"], ["grants: 'tools/nope' is not a source, tool or flow in the plugins folder"])

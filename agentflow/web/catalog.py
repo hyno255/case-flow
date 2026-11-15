@@ -354,9 +354,11 @@ def settings_view(settings) -> dict:
     """agentflow.yaml as the engine reads it. A key is shown as the name of its variable and whether that is set, never as a value."""
     models = []
     for name, written in settings.models.items():
-        m = {**MODEL_DEFAULTS, **(written if isinstance(written, dict) else {})}
-        models.append({"name": name, "default": name == settings.default_model, "provider": m["provider"], "model": m["name"], "api": m["api"],
-                       "reasoning": m["reasoning"], "key_env": m["api_key_env"], "key_set": bool(os.environ.get(m["api_key_env"]))})
+        written = written if isinstance(written, dict) else {}
+        m = {**({} if "harness" in written else MODEL_DEFAULTS), **written}  # a CLI has its own provider, interface and sign-in
+        models.append({"name": name, "default": name == settings.default_model, "runs_on": f"{m['harness']} CLI" if "harness" in m else "engine",
+                       "provider": m.get("provider", ""), "model": m.get("name", ""), "api": m.get("api", ""), "reasoning": m.get("reasoning", ""),
+                       "key_env": m.get("api_key_env", ""), "key_set": bool(os.environ.get(m.get("api_key_env") or ""))})
     kinds = {k: installed(settings).names(k) for k in KINDS}
     grants = []
     for key in settings.grants:

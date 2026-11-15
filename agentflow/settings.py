@@ -4,8 +4,11 @@ from pathlib import Path
 
 import yaml
 
+from .harness import CLIS
+
 MODEL_DEFAULTS = {"provider": "openai", "name": "", "api_key_env": "OPENAI_API_KEY", "api": "responses", "reasoning": "low"}
 MODEL_KEYS = set(MODEL_DEFAULTS) | {"base_url"}
+HARNESS_KEYS = {"harness", "name", "api_key_env"}  # a model entry whose work a CLI does: which CLI, which model, and a key if not its own sign-in
 DEFAULTS = yaml.safe_load(Path(__file__).with_name("defaults.yaml").read_text())  # every limit and its default; no number lives in the code
 SECTIONS = tuple(DEFAULTS)  # limits, engine, show
 LIMIT_KEYS = set(DEFAULTS["limits"])
@@ -21,6 +24,18 @@ def check_numbers(section: str, written, where: str = "") -> list[str]:
     for k, v in written.items():
         if k in DEFAULTS[section] and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0 or (v == 0 and k not in MAY_BE_ZERO)):
             errs.append(f"{where}{section}: {k} must be a number above 0")
+    return errs
+
+
+def model_errors(m, where: str) -> list[str]:
+    """What is wrong with one model entry, named in agentflow.yaml or written in a flow."""
+    m = m if isinstance(m, dict) else {}
+    keys = HARNESS_KEYS if "harness" in m else MODEL_KEYS
+    errs = [f"{where}: unknown key '{k}'" + (f"; a model on a CLI takes {', '.join(sorted(HARNESS_KEYS))}" if "harness" in m else "") for k in m if k not in keys]
+    if "harness" in m and m["harness"] not in CLIS:
+        errs.append(f"{where}: no harness named '{m['harness']}'; the engine knows {', '.join(CLIS)}")
+    if not m.get("name"):
+        errs.append(f"{where}: missing 'name'")
     return errs
 
 
@@ -73,11 +88,11 @@ class Settings:
         if self.engine["stale_after_seconds"] <= self.engine["heartbeat_seconds"]:
             errs.append("engine: stale_after_seconds must be more than heartbeat_seconds, or a working run looks interrupted")
         for name, m in self.models.items():
-            errs += [f"models: {name}: unknown key '{k}'" for k in (m or {}) if k not in MODEL_KEYS]
-            if not (m or {}).get("name"):
-                errs.append(f"models: {name}: missing 'name'")
+            errs += model_errors(m, f"models: {name}")
         if self.default_model not in self.models:
             errs.append("model: name one of the entries under 'models' as the default")
+        elif self.harness_of(self.default_model):
+            errs.append("model: the default also runs reviewers, which stay in the engine; name a model without 'harness'")
         for key, g in self.grants.items():
             kind, _, name = str(key).partition("/")
             if kind not in ("sources", "tools", "flows") or not (self.plugins / kind / name).is_dir():
@@ -90,27 +105,35 @@ class Settings:
 
     def model(self, spec=None) -> dict:
         """One model's settings. `spec` is a name from `models:`, a mapping written in a flow, or nothing for the default.
-        The key itself is never here: `api_key_env` names the environment variable that holds it."""
+        The key itself is never here: `api_key_env` names the environment variable that holds it.
+        An entry with `harness` is returned as written: the CLI it names has its own provider, interface and sign-in."""
         spec = self.default_model if spec is None else spec
-        if isinstance(spec, dict):
-            return {**MODEL_DEFAULTS, **spec}
-        if spec not in self.models:
-            raise ValueError(f"agentflow.yaml has no model named '{spec}'; it has {', '.join(self.models) or 'none'}")
-        return {**MODEL_DEFAULTS, **(self.models[spec] or {})}
+        if not isinstance(spec, dict):
+            if spec not in self.models:
+                raise ValueError(f"agentflow.yaml has no model named '{spec}'; it has {', '.join(self.models) or 'none'}")
+            spec = self.models[spec] or {}
+        return dict(spec) if "harness" in spec else {**MODEL_DEFAULTS, **spec}
+
+    def harness_of(self, spec=None) -> str | None:
+        """The CLI that does the work when this model is picked; None when the engine's own harness does."""
+        try:
+            return self.model(spec).get("harness")
+        except ValueError:
+            return None
 
     def model_label(self, spec=None) -> str:
-        if self.stand_in:
-            return "scripted stand-in"
         try:
             m = self.model(spec)
         except ValueError:
-            return f"{spec} (not defined)"
-        return f"{m['provider']} · {m['name']}"
+            return "scripted stand-in" if self.stand_in else f"{spec} (not defined)"
+        if "harness" in m:
+            return f"{m['harness']} CLI · {'scripted stand-in' if self.stand_in else m.get('name', '')}"
+        return "scripted stand-in" if self.stand_in else f"{m['provider']} · {m['name']}"
 
     def check_model(self, spec, where: str) -> list[str]:
         """What is wrong with a model named or written at `where`."""
         if isinstance(spec, dict):
-            return [f"{where}: model: unknown key '{k}'" for k in spec if k not in MODEL_KEYS] + ([] if spec.get("name") else [f"{where}: model has no name"])
+            return model_errors(spec, f"{where}: model")
         if spec not in self.models:
             return [f"{where}: no model named '{spec}' in agentflow.yaml"]
         return []

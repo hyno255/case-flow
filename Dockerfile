@@ -2,11 +2,16 @@
 # Nothing of yours is inside: settings, plugins and data are attached when it runs (see compose.yaml).
 FROM python:3.12-slim
 
-# Programs that stage scripts, tools and MCP servers call. Add yours to this line,
-# for example `nodejs npm` for MCP servers started with npx.
+# Programs that stage scripts, tools and MCP servers call. Add yours to this line.
+# nodejs and npm are here for the coding CLIs below, and for MCP servers started with npx.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git jq curl ca-certificates \
+    && apt-get install -y --no-install-recommends git jq curl ca-certificates nodejs npm \
     && rm -rf /var/lib/apt/lists/*
+
+# The coding CLIs a model entry in agentflow.yaml can name with `harness:`, each at a fixed version.
+# Take out the one you do not use; `agentflow check` says which are installed.
+RUN npm install -g @openai/codex@0.166.0 @anthropic-ai/claude-code@2.1.277 \
+    && npm cache clean --force
 
 WORKDIR /opt/agentflow
 COPY pyproject.toml ./

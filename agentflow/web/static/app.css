@@ -193,11 +193,11 @@ details.sp > summary .tw::before { content: "▸"; } details.sp[open] > summary 
 .sp-name small { overflow: hidden; text-overflow: ellipsis; }
 .sp-who { font-family: var(--font-mono); font-size: 0.74rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kd { flex: none; font-style: normal; font-family: var(--font-mono); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
-.kd.k-model { color: var(--accent); border-color: var(--accent); } .kd.k-tool { color: var(--ok); border-color: var(--ok); }
+.kd.k-model, .kd.k-cli { color: var(--accent); border-color: var(--accent); } .kd.k-tool { color: var(--ok); border-color: var(--ok); }
 .kd.k-check, .kd.k-review { color: var(--warn); border-color: var(--warn); }
 .sp-track { position: relative; height: 14px; background: repeating-linear-gradient(to right, var(--line) 0, var(--line) 1px, transparent 1px, transparent 25%); border-right: 1px solid var(--line); }
 .sp-bar { position: absolute; top: 3px; height: 8px; min-width: 3px; border-radius: 2px; background: var(--muted); }
-.sp-bar.k-model { background: var(--accent); } .sp-bar.k-tool { background: var(--ok); opacity: 0.75; } .sp-bar.k-run { background: var(--ink); opacity: 0.45; }
+.sp-bar.k-model, .sp-bar.k-cli { background: var(--accent); } .sp-bar.k-tool { background: var(--ok); opacity: 0.75; } .sp-bar.k-run { background: var(--ink); opacity: 0.45; }
 .sp-bar.ok { background: var(--ok); } .sp-bar.fail, .sp-bar.hold { background: var(--warn); } .sp-bar.bad, .sp-bar.cut { background: var(--bad); }
 .sp-bar.run { background: var(--accent); } .sp-bar.skip { background: var(--line); }
 .sp-bar.k-item { opacity: 0.55; } .sp-bar.k-mark { width: 3px !important; border-radius: 0; }

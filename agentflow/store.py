@@ -207,7 +207,7 @@ class Store:
         a = self.one(f"""SELECT COALESCE(SUM(tool_calls),0) tools, COALESCE(SUM(tokens_in+tokens_out),0) tokens, COALESCE(SUM(cost_usd),0) cost,
                          COALESCE(SUM(model_calls),0) calls,
                          SUM(CASE WHEN (model_calls > 0 AND cost_usd IS NULL)
-                                    OR (by != 'script' AND model_calls = 0 AND outcome IN ('interrupted', 'timed_out', 'error')) THEN 1 ELSE 0 END) unknown,
+                                    OR (by != 'script' AND model_calls = 0 AND outcome IN ('interrupted', 'timed_out', 'error', 'cancelled')) THEN 1 ELSE 0 END) unknown,
                          COALESCE(SUM(ended - started),0) seconds FROM attempts WHERE {where}""", *args)
         v = self.one(f"""SELECT COALESCE(SUM(tokens_in+tokens_out),0) tokens, COALESCE(SUM(cost_usd),0) cost,
                          SUM(CASE WHEN tokens_in > 0 AND cost_usd IS NULL THEN 1 ELSE 0 END) unknown FROM verdicts WHERE {where}""", *args)

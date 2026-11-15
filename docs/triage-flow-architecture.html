@@ -141,6 +141,7 @@
   <a href="#graph">The flow as a graph</a>
   <a href="#start">What starts a run</a>
   <a href="#models">Models</a>
+  <a href="#cli">A stage on a coding CLI</a>
   <span class="label">Operation</span>
   <a href="#data">What is stored</a>
   <a href="#recovery">Recovery</a>
@@ -165,7 +166,7 @@
     <div><b>The flow is the unit</b><span>A run is always a run of one flow. It ends with a report in the run folder. The engine sends nothing anywhere.</span></div>
     <div><b>Source hands over, flow accepts, engine routes</b><span>A source says how items are got and what it writes. A flow says which source it accepts, which of its items, and when. The engine fetches, checks and routes.</span></div>
     <div><b>A graph with bounded loops</b><span>A flow compiles to stages joined by pass edges and fail edges. A loop exists only on a fail edge, and <code>tries</code> bounds it.</span></div>
-    <div><b>Agents inside, scripts beside</b><span>Agents run in the engine's process on Pydantic AI and get only the tools they list. Scripts are plain child processes in the same container.</span></div>
+    <div><b>Agents inside, scripts beside</b><span>Agents run in the engine's process on Pydantic AI and get only the tools they list. Scripts are plain child processes in the same container. A stage's work can also be handed to Codex or Claude Code.</span></div>
     <div><b>A folder per item</b><span>Every stage reads and writes the item's work folder. It is the hand-over between stages and the evidence afterwards.</span></div>
     <div><b>Facts stored, status derived</b><span>One SQLite file holds runs, items, tries, verdicts and events. The pages, the API and the CLI read the same rows, so they agree.</span></div>
   </div>
@@ -186,7 +187,8 @@ data/           ←─ read-write ────→            └─ tools <span 
       <h3>The image</h3>
       <div class="scroll"><table><tbody>
         <tr><td class="key">Base</td><td><code>python:3.12-slim</code></td></tr>
-        <tr><td class="key">Programs for scripts</td><td><code>python3</code>, <code>git</code>, <code>jq</code>, <code>curl</code>, CA certificates</td></tr>
+        <tr><td class="key">Programs for scripts</td><td><code>python3</code>, <code>git</code>, <code>jq</code>, <code>curl</code>, <code>nodejs</code>, <code>npm</code>, CA certificates</td></tr>
+        <tr><td class="key">Coding CLIs</td><td>Codex 0.166.0 and Claude Code 2.1.277, installed with npm at these versions</td></tr>
         <tr><td class="key">The engine</td><td><code>pyproject.toml</code> and <code>agentflow/</code>, installed with pip. <code>.dockerignore</code> keeps every other file out.</td></tr>
         <tr><td class="key">User and home</td><td><code>agentflow</code>, uid 1000 · <code>AGENTFLOW_HOME=/work</code></td></tr>
         <tr><td class="key">Starts</td><td><code>agentflow serve --host 0.0.0.0</code> on port 8321. Any other command replaces <code>serve</code>.</td></tr>
@@ -235,6 +237,7 @@ docker compose run --rm agentflow run vuln-triage</pre>
         <li>A script can read <code>agentflow.yaml</code>, every plugin, and all of <code>data/</code>: other items, other runs, the database. It can write anywhere in <code>data/</code>.</li>
         <li>There is no network rule per plugin. <code>grants:</code> names secrets only: it decides what a script is handed, not what it can reach.</li>
         <li>No plugin file mentions Docker. Every flow shares the one image, and <code>compose.yaml</code> sets no CPU or memory limit.</li>
+        <li>A coding CLI that does a stage has a shell of its own. Codex is started with its sandbox set to keep writes in the item's folder, and Claude Code accepts edits in the folder it starts in; the engine does not verify either.</li>
         <li>An MCP server is started by the MCP client, not behind the guard. A script that moves itself to another session ends when the container does.</li>
       </ul>
     </div>
@@ -404,10 +407,60 @@ grants: {}                      <span class="c"># e.g. sources/security-tickets:
         <li>A reviewer uses its own agent's model, then the flow's, then the default.</li>
         <li>Keys come from the environment. <code>agentflow/agents.py</code> is the only module that knows about providers.</li>
         <li>The pages show no global model. The model is shown on the flow, the stage, the agent, and each try in the trace.</li>
-        <li><code>--stand-in</code> swaps in a scripted model that needs no key and costs nothing. It only knows <code>vuln-triage</code>.</li>
+        <li>An entry with <code>harness:</code> hands a stage's work to a coding CLI. The next section describes it.</li>
+        <li><code>--stand-in</code> swaps in a scripted model, and a scripted CLI, that need no key and cost nothing. They only know <code>vuln-triage</code>.</li>
       </ul>
     </div>
   </div>
+</section>
+
+<section id="cli">
+  <h2>A stage on a coding CLI</h2>
+  <p>The engine's own harness runs a stage's agent in its process. A model entry with <code>harness:</code> hands the work of a stage to Codex or Claude Code instead. The engine starts the CLI in the item's work folder, waits, and keeps what it printed. It does not follow what the CLI does: the check script and the reviewer judge the files it left, as for any other try.</p>
+  <div class="two">
+    <div class="col">
+<pre class="solo"><span class="c"># agentflow.yaml</span>
+models:
+  luna:       {provider: openai, name: gpt-6-luna}
+  luna-codex: {harness: codex, name: gpt-6-luna,
+               api_key_env: OPENAI_API_KEY}
+  sonnet-cc:  {harness: claude, name: sonnet}
+
+<span class="c"># flow.yaml</span>
+  - id: analyse
+    agent: origin-analyst
+    model: luna-codex   <span class="c"># this stage's work is done by Codex</span></pre>
+    </div>
+    <div class="col">
+      <ul>
+        <li><code>harness</code> is <code>codex</code> or <code>claude</code>. With <code>api_key_env</code> the CLI is handed that key under its own variable name. Without it the CLI uses its own sign-in.</li>
+        <li>A stage or an agent picks such a model. A flow's <code>model:</code>, a reviewer's model and the platform default cannot name one, because reviewers run in the engine. <code>check</code> says so.</li>
+        <li>How each CLI is started and how its output is read is in <code>agentflow/harness.py</code>. None of it is a setting.</li>
+        <li>A run asks before it starts whether the CLI is installed and the named key is set.</li>
+        <li><code>--stand-in</code> starts <code>stand_in_cli.py</code> in the CLI's place.</li>
+      </ul>
+    </div>
+  </div>
+<pre class="solo">stage  <span class="c">stages.py</span>
+  │  instructions · a note for the CLI · prompt        <span class="c">on stdin</span>
+  ▼
+codex exec --json --skip-git-repo-check -s workspace-write -m &lt;model&gt; -o &lt;last message file&gt; -
+claude -p --output-format json --permission-mode acceptEdits --model &lt;model&gt; --allowedTools "Bash(&lt;tool&gt; *)"
+  │  <span class="c">a child process behind guard.py, in the item's work folder</span>
+  ▼  last message · seconds · tokens · cost             <span class="c">one cli_run event</span>
+check script ─→ reviewer ─→ pass, try again, or a person   <span class="c">in the engine, as for any try</span></pre>
+  <div class="scroll"><table class="wrap mid">
+    <thead><tr><th>What</th><th>How</th></tr></thead><tbody>
+    <tr><td class="name">What the CLI is told</td><td>The stage's instructions, then a note, then the prompt. The note says where it is, which commands it may run, and how to ask for a person. The prompt is also kept as <code>attempts/&lt;stage&gt;-&lt;n&gt;.prompt.md</code>.</td></tr>
+    <tr><td class="name">Tools</td><td>Each script tool the agent lists is named as a command with its arguments. A tool that is an MCP server, or one that was granted secrets, cannot be used; <code>check</code> refuses such a stage.</td></tr>
+    <tr><td class="name">Asking for a person</td><td>The CLI writes <code>needs-person.md</code>. The engine takes its text as the reason and moves the file to <code>attempts/</code>.</td></tr>
+    <tr><td class="name">What it sees of the engine</td><td><code>PATH</code>, <code>LANG</code>, the user's home and name, <code>AGENTFLOW_FLOW_DIR</code>, <code>AGENTFLOW_ITEM_ID</code>, <code>AGENTFLOW_TRIAL</code> in a trial, and the key when the entry names one. No granted secret.</td></tr>
+    <tr><td class="name">Time and stopping</td><td>The item's <code>minutes_per_item</code> is its time limit. A cancelled run stops it and everything it started, as it stops a script.</td></tr>
+    <tr><td class="name">What is kept</td><td><code>attempts/&lt;stage&gt;-&lt;n&gt;.&lt;cli&gt;.jsonl</code> holds everything it printed. Codex also writes its last message to <code>attempts/&lt;stage&gt;-&lt;n&gt;.codex.md</code>.</td></tr>
+    <tr><td class="name">Cost</td><td>Claude Code reports its cost. Codex reports tokens and no cost, so its tokens are priced from the price list, cached input included. A model the list does not have leaves the cost not recorded.</td></tr>
+    <tr><td class="name">In the trace</td><td>One span of kind <code>cli</code> per run, with seconds, tokens, cost, the last message and a link to the output file. Parents count "CLI runs". The CLI's own model calls and tool calls are not counted.</td></tr>
+    <tr><td class="name">A failed try</td><td>A non-zero exit, an error the CLI reports, or no answer. The item fails with that reason, as it does on a model error. A try that was stopped has no recorded cost.</td></tr>
+  </tbody></table></div>
 </section>
 
 <section id="data">
@@ -512,7 +565,7 @@ pyproject.toml   <span class="c"># the package and what it needs</span>
 .env             <span class="c"># model keys and granted secrets</span>
 agentflow/       <span class="c"># the engine package</span>
 plugins/         <span class="c"># flows, agents, tools, sources</span>
-tests/           <span class="c"># test_engine.py, test_recovery.py, test_web.py</span>
+tests/           <span class="c"># test_engine.py, test_harness.py, test_recovery.py, test_web.py</span>
 docs/            <span class="c"># this page and other documents</span>
 data/            <span class="c"># everything the engine writes</span></pre>
       <p class="fine">The engine writes only under <code>data/</code>. The pages and the command line read the engine; the engine never imports them.</p>
@@ -523,6 +576,7 @@ data/            <span class="c"># everything the engine writes</span></pre>
 ├── plugins.py                <span class="c"># load, check and copy the plugin folders</span>
 ├── graph.py  stages.py       <span class="c"># a flow compiled · one item on the graph: do, validate, decide</span>
 ├── agents.py  stand_in.py    <span class="c"># one agent run: model, tools, cost · the scripted model</span>
+├── harness.py  stand_in_cli.py  <span class="c"># one try done by Codex or Claude Code · the scripted CLI</span>
 ├── procs.py  guard.py        <span class="c"># scripts as child processes · stops a script with the engine</span>
 ├── runner.py  schedule.py    <span class="c"># fetch, route, work, finish · which flows are due, on and off</span>
 ├── health.py                 <span class="c"># whether each tool works right now</span>
@@ -539,7 +593,9 @@ data/            <span class="c"># everything the engine writes</span></pre>
   <h2>Checked and not checked</h2>
   <div class="scroll"><table class="wrap mid">
     <thead><tr><th>What</th><th>State</th><th>Detail</th></tr></thead><tbody>
-    <tr><td class="name">Tests</td><td><span class="pill done">checked</span></td><td>42 tests pass on the scripted stand-in model: 20 on the engine, 6 on recovery, 16 on the pages.</td></tr>
+    <tr><td class="name">Tests</td><td><span class="pill done">checked</span></td><td>51 tests pass on the scripted stand-in model: 20 on the engine, 9 on a stage done by a CLI, 6 on recovery, 16 on the pages.</td></tr>
+    <tr><td class="name">A stage on Codex</td><td><span class="pill done">checked</span></td><td>One trial item with gpt-6-luna and the key, on this machine and in the container: the item ended done. On this machine the analyse stage took 22.5 seconds and 95,901 tokens, priced at $0.0040; the engine's own harness took 7.4 seconds and 5,927 tokens, $0.0008.</td></tr>
+    <tr><td class="name">A stage on Claude Code</td><td><span class="pill hold">not checked</span></td><td>Its own sign-in on this machine had expired, so the real run ended with that error, which the item shows as its reason. Its output is read by the tests from a recorded shape only.</td></tr>
     <tr><td class="name">In the container</td><td><span class="pill done">checked</span></td><td>On a Mac with Docker Desktop: the image builds, the server starts and checks the tools, and a flow runs from its page.</td></tr>
     <tr><td class="name">The real model</td><td><span class="pill done">checked</span></td><td>In the container, one run of the four invented tickets, started from the flow's page: 2 done, 2 for a person, 45 seconds, $0.0074.</td></tr>
     <tr><td class="name">A schedule in the container</td><td><span class="pill hold">not checked</span></td><td>A due schedule starting its flow is tested outside the container only.</td></tr>

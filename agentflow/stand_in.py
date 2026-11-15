@@ -10,6 +10,8 @@ import re
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 
+from .stand_in_cli import not_found, origin_md
+
 
 def _user_text(messages) -> str:
     return "\n".join(str(p.content) for m in messages if isinstance(m, ModelRequest) for p in m.parts if isinstance(p, UserPromptPart))
@@ -58,17 +60,9 @@ def _analyse(messages) -> ModelResponse:
     sboms = {j["file"]: j for j in map(_json, (r for r in returns if r.tool_name == "sbom-query"))}
     image, base = sboms.get("image-sbom.json", {}), sboms.get("base-sbom.json", {})
     if not path and not image.get("found"):
-        return _call("ask_for_person", reason=f"{package} is in neither dependency-tree.json nor image-sbom.json. "
-                                              "Check whether the scanner flagged the right service.")
+        return _call("ask_for_person", reason=not_found(package))
     told = "cites no file" in _user_text(messages)  # did the check script's reason reach this run?
-    links = [f"{a['name']} depends on {b['name']} {b.get('version', '')} (file: dependency-tree.json)" for a, b in zip(path, path[1:])]
-    links.append(f"{package} {image.get('version', '')} is in the {image.get('layer', 'unknown layer')} of the image"
-                 + (" (file: image-sbom.json)" if told else ""))
-    links.append(f"the base image {'contains' if base.get('found') else 'does not contain'} {package} (file: base-sbom.json)")
-    in_app, in_base = len(path) > 1, bool(base.get("found"))
-    origin = "both" if in_app and in_base else "base image" if in_base else "app dependency"
-    body = f"# Origin of {package} in {ticket.get('service', '')}\n\nOrigin: {origin}\n\n## Chain\n" + "".join(f"- {l}\n" for l in links)
-    return _call("write_file", path="origin.md", content=body)
+    return _call("write_file", path="origin.md", content=origin_md(ticket, path, image, base, told))
 
 
 def _fix(messages) -> ModelResponse:

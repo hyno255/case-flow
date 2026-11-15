@@ -11,7 +11,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .agents import build_model
+from .agents import check_ready
 from .layout import ITEMS, PLUGINS, new_fetch_folder, new_run_folder
 from .plugins import Registry, accepts, installed, run_plugins
 from .procs import run_proc
@@ -65,7 +65,7 @@ def fingerprint(item: dict) -> str:
 
 def create_run(settings, store, live: Registry, flow: str, *, source, fetch_id, trial, **retry) -> tuple[str, Path]:
     for spec in live.models_used(flow):
-        build_model(settings, spec)  # stop before any work if a model this flow uses is not usable
+        check_ready(settings, spec)  # stop before any work if a model this flow uses is not usable
     run_id = None
     while run_id is None or store.run(run_id):  # short ids are easy to read and say; one that is taken is drawn again
         run_id = ("t_" if trial else "r_") + uuid.uuid4().hex[:4]

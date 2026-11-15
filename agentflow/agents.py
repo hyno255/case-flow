@@ -16,6 +16,7 @@ from pydantic_ai.mcp import MCPToolset  # noqa: E402
 from pydantic_ai.messages import ModelResponse  # noqa: E402
 from pydantic_ai.usage import UsageLimits  # noqa: E402
 
+from .harness import not_ready  # noqa: E402
 from .layout import confined, visible_files  # noqa: E402
 from .procs import run_proc  # noqa: E402
 
@@ -134,6 +135,8 @@ def build_model(settings, spec=None):
         m = settings.model(spec)
     except ValueError as e:
         raise ModelNotReady(str(e))
+    if "harness" in m:  # only a stage's work can go to a CLI; `check` says so before a run
+        raise ModelNotReady(f"the model {spec or 'default'} runs on the {m['harness']} CLI, and this part of a stage runs in the engine")
     if not m.get("name"):
         raise ModelNotReady(f"the model {spec or 'default'} has no name in agentflow.yaml")
     key = os.environ.get(m["api_key_env"])
@@ -154,6 +157,17 @@ def build_model(settings, spec=None):
         return OpenAIResponsesModel(m["name"], provider=provider,
                                     settings=OpenAIResponsesModelSettings(openai_reasoning_effort=effort, openai_store=False))
     return OpenAIChatModel(m["name"], provider=provider, settings=OpenAIChatModelSettings(openai_reasoning_effort=effort))
+
+
+def check_ready(settings, spec=None) -> None:
+    """Raises ModelNotReady when a model a flow uses cannot be used now: its key is not set, or the CLI it names is not installed.
+    A run asks this for every model it will use, before it does any work."""
+    if settings.harness_of(spec) and not settings.stand_in:
+        why = not_ready(settings.model(spec))
+        if why:
+            raise ModelNotReady(why)
+    else:
+        build_model(settings, spec)
 
 
 async def run_agent(settings, instructions: str, prompt: str, tools: list, output_type=str, on_event=lambda *a, **k: None, model=None,

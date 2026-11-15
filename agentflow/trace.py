@@ -1,7 +1,7 @@
 """A run as a tree of timed spans, built from the event log: run > item > stage > try > part > call.
 
 Read-only. A part is one piece of a try: the script or the agent doing the stage, the check script, or the
-reviewer. A call is one model request or one tool call. Every span says who did it and on which model, when it
+reviewer. A call is one model request, one tool call, or one run of a CLI that did the stage's work. Every span says who did it and on which model, when it
 began and ended, what it used, and what it was given and answered, so a page can draw the tree beside a detail pane.
 """
 import json
@@ -16,7 +16,7 @@ from .status import ENDINGS, OUTCOMES, label
 TRY_STATE = {name: bar for name, (_, _, bar) in OUTCOMES.items() if bar}   # a try with one of these outcomes is over
 ITEM_STATE = {name: bar for name, (_, _, bar) in ENDINGS.items() if bar}
 FIXED = ("seq", "ts", "run", "item", "stage", "type")  # the fields every event has; the rest is what the event carries
-USE = ("tokens_in", "tokens_out", "cost", "model_calls", "tool_calls")  # added up from the calls into every span above them
+USE = ("tokens_in", "tokens_out", "cost", "model_calls", "tool_calls", "cli_runs")  # added up from the calls into every span above them
 PARTS = ("agent", "script", "check", "review")
 RUN_MARKS = {"report_rendered": "report written", "run_interrupted": "interrupted", "run_resumed": "resumed", "cancel_requested": "cancel asked for"}
 
@@ -39,8 +39,8 @@ def seconds_text(s: float) -> str:
 
 def _span(kind: str, name: str, start: float, end: float | None = None, **extra) -> dict:
     return {"kind": kind, "name": name, "who": "", "model": "", "start": start, "end": end, "state": "", "note": "", "href": "",
-            "facts": [], "blocks": [], "children": [], "tokens_in": 0, "tokens_out": 0, "cost": 0.0, "cost_unknown": False, "cost_note": "",
-            "model_calls": 0, "tool_calls": 0, **extra}
+            "facts": [], "links": [], "blocks": [], "children": [], "tokens_in": 0, "tokens_out": 0, "cost": 0.0, "cost_unknown": False, "cost_note": "",
+            "model_calls": 0, "tool_calls": 0, "cli_runs": 0, **extra}
 
 
 def _text(value, cap: int) -> str:
@@ -147,6 +147,16 @@ def build(store, run, show: dict, item_id: str | None = None, live: bool = False
                       tokens_in=d.get("tokens_in") or 0, tokens_out=d.get("tokens_out") or 0, model_calls=1, cost=price or 0.0, cost_unknown=price is None,
                       cost_note="not recorded" if price is None else "estimated" if price else "free", note="" if at else "time not recorded")
             part(d.get("role"))["children"].append(c)
+        elif t == "cli_run":  # a CLI did the try: one span for its whole run. What it called inside is in the file it printed
+            at, price = d.get("started") or ts, d.get("cost_usd")
+            c = _span("cli", d.get("harness") or "cli", at, at + d.get("seconds", 0), who=d.get("agent") or "", model=d.get("model") or "",
+                      tokens_in=d.get("tokens_in") or 0, tokens_out=d.get("tokens_out") or 0, cli_runs=1, cost=price or 0.0, cost_unknown=price is None,
+                      cost_note="not recorded" if price is None else "free" if not price else "reported by the CLI" if d.get("reported") else "estimated")
+            if d.get("output"):
+                c["links"].append(("output", d["output"], f"/runs/{run['id']}/items/{d['item']}/files/{d['output']}"))
+            if d.get("said"):
+                c["blocks"].append(("last message", _text(d["said"], block)))
+            part(None)["children"].append(c)
         elif t == "attempt_ended":
             ex = part(None)
             ex["end"] = ts
@@ -210,7 +220,7 @@ def build(store, run, show: dict, item_id: str | None = None, live: bool = False
                 tr["state"] = TRY_STATE.get(outcome, "run" if working else "cut")
                 tr["note"] = label(OUTCOMES, outcome) if outcome in OUTCOMES else "running" if working else "not finished"
                 ex = tr.pop("execute")
-                if ex and ex["kind"] == "agent" and outcome in ("interrupted", "timed_out", "error") and not any(c["kind"] == "model" for c in ex["children"]):
+                if ex and ex["kind"] == "agent" and outcome in ("interrupted", "timed_out", "error", "cancelled") and not any(c["kind"] in ("model", "cli") for c in ex["children"]):
                     ex["cost_unknown"] = True  # the model was used, but the try was cut before its usage was recorded
                 tr.pop("open"), tr.pop("review")
                 for ph in tr["children"]:  # model calls are recorded when the try ends; put every call where it happened
@@ -255,7 +265,7 @@ def build(store, run, show: dict, item_id: str | None = None, live: bool = False
         s["time"] = "" if s["kind"] == "mark" else seconds_text(s["seconds"])
         s["tokens"] = s["tokens_in"] + s["tokens_out"]
         if not calls and s["kind"] in PARTS:
-            counted = [f"{s[k]} {word}" for k, word in (("model_calls", "model calls"), ("tool_calls", "tool calls")) if s[k]]
+            counted = [f"{s[k]} {word}" for k, word in (("model_calls", "model calls"), ("tool_calls", "tool calls"), ("cli_runs", "CLI runs")) if s[k]]
             s["note"] = " · ".join(filter(None, [s["note"], *counted]))
             s["children"] = []
         for i, c in enumerate(s["children"]):

@@ -9,6 +9,10 @@ models:                       # every model the flows may use, by a name of your
     reasoning: low              # none | low | medium | high
   # through a LiteLLM proxy:
   # proxy-small: {provider: litellm, name: some-model, base_url: http://localhost:4000, api_key_env: LITELLM_KEY, api: chat, reasoning: none}
+  # A stage's work done by a coding CLI on this machine instead of the engine's own harness. Pick one on a stage or an agent
+  # with `model:`. `harness` is codex or claude; `api_key_env` hands the CLI that key, and without it the CLI uses its own sign-in.
+  luna-codex: {harness: codex, name: gpt-6-luna, api_key_env: OPENAI_API_KEY}
+  sonnet-cc: {harness: claude, name: sonnet}
 
 model: luna                   # the default. A flow, a stage or an agent can name another with `model:`
 

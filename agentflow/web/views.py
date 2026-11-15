@@ -134,7 +134,7 @@ def run_graph(settings, store, run, flow: dict, status: str) -> tuple[dict, list
 def dress(tr: dict) -> dict:
     """Gives every span of a trace its cost as the tables word it."""
     for s in tracing.walk(tr["root"]):
-        s["cost_cell"] = show.cost({"has_model_calls": s["model_calls"] or s["cost_unknown"], "cost_known": not s["cost_unknown"], "cost_usd": s["cost"]},
+        s["cost_cell"] = show.cost({"has_model_calls": s["model_calls"] or s["cli_runs"] or s["cost_unknown"], "cost_known": not s["cost_unknown"], "cost_usd": s["cost"]},
                                    "the cost was not recorded")
         if s["cost_note"]:  # one model call knows what kind of number its cost is
             s["cost_cell"]["tip"] = s["cost_note"]
