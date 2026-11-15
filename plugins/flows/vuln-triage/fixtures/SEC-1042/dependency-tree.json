@@ -1,0 +1,4 @@
+{"name": "checkout-api", "deps": [
+  {"name": "acme-http", "version": "4.2.0", "deps": [{"name": "libexample-xml", "version": "2.9.1"}]},
+  {"name": "acme-log", "version": "1.8.0"}
+]}

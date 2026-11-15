@@ -1,0 +1,4 @@
+description: Open security tickets from the tracker.
+run: ./fetch.sh          # how and where the items are got
+output: tickets.json     # the file it writes into its output folder: a JSON list, each item with an "id"
+fields: [service, package, fixed_in, severity, summary]   # what every item has

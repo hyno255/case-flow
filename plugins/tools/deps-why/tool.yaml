@@ -1,0 +1,4 @@
+description: Show the path from the service to a package in dependency-tree.json.
+run: ./run.py
+args: [package]
+health: ./health.sh

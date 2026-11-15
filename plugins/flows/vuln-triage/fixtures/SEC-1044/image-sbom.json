@@ -1,0 +1,1 @@
+{"image": "registry.example/search-indexer:2026.11.1", "packages": [{"name": "libexample-yaml", "version": "0.2.5", "layer": "app (layer 5)"}]}

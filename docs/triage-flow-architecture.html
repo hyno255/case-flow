@@ -1,0 +1,551 @@
+<title>Triage Flow Architecture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+  /* Layout: a reading column with a sticky index. One diagram of the container, then each part of the engine as tables and code blocks. */
+  :root {
+    --bg: #F3F5F8;
+    --surface: #FFFFFF;
+    --sunk: #E9EDF2;
+    --ink: #151E28;
+    --muted: #586574;
+    --line: #D3DAE2;
+    --accent: #2347C5;
+    --accent-soft: #E3E9FB;
+    --ok: #17734F;
+    --ok-soft: #DDF1E8;
+    --warn: #9A5708;
+    --warn-soft: #F8EBD6;
+    --font-display: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0F151C;
+      --surface: #171F29;
+      --sunk: #0B1016;
+      --ink: #E4EAF1;
+      --muted: #97A5B4;
+      --line: #2A3542;
+      --accent: #93AAFF;
+      --accent-soft: #1C2748;
+      --ok: #5FD0A2;
+      --ok-soft: #123226;
+      --warn: #E7B35C;
+      --warn-soft: #3A2A10;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0F151C;
+    --surface: #171F29;
+    --sunk: #0B1016;
+    --ink: #E4EAF1;
+    --muted: #97A5B4;
+    --line: #2A3542;
+    --accent: #93AAFF;
+    --accent-soft: #1C2748;
+    --ok: #5FD0A2;
+    --ok-soft: #123226;
+    --warn: #E7B35C;
+    --warn-soft: #3A2A10;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.65; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .page {
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 40px 72px;
+  }
+  .layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 56px; max-width: 1280px; margin: 0 auto; }
+  .index { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; display: flex; flex-direction: column; gap: 2px; font-size: 0.875rem; }
+  .index .label { margin: 10px 0 4px; }
+  .index .label:first-child { margin-top: 0; }
+  .index a { color: var(--muted); text-decoration: none; padding: 3px 0; }
+  .index a:hover { color: var(--accent); }
+  main { min-width: 0; display: flex; flex-direction: column; gap: 56px; }
+
+  .label { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; line-height: 1.2; }
+  h1 { font-size: clamp(2rem, 5vw, 2.9rem); font-weight: 700; letter-spacing: -0.02em; }
+  h2 { font-size: 1.55rem; font-weight: 600; letter-spacing: -0.01em; }
+  h3 { font-size: 1.15rem; font-weight: 600; }
+  p { margin: 0; max-width: 70ch; }
+  ul, ol { margin: 0; padding-left: 1.2em; max-width: 70ch; display: flex; flex-direction: column; gap: 6px; }
+  code { font-family: var(--font-mono); font-size: 0.86em; background: var(--sunk); padding: 0.1em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+  .fine { font-size: 0.85rem; color: var(--muted); }
+
+  header.top { display: flex; flex-direction: column; gap: 14px; }
+  .lede { font-size: 1.15rem; color: var(--muted); max-width: 62ch; }
+  section { display: flex; flex-direction: column; gap: 18px; scroll-margin-top: 24px; }
+
+  .note { border-left: 3px solid var(--warn); background: var(--warn-soft); padding: 12px 16px; font-size: 0.93rem; max-width: 70ch; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow: hidden; }
+  .cards > div { padding: 16px 18px; display: flex; flex-direction: column; gap: 6px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 0 -1px -1px 0; font-size: 0.93rem; }
+  .cards b { font-family: var(--font-display); font-size: 1.02rem; }
+  .cards span { color: var(--muted); }
+
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; line-height: 1.45; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  tr:last-child td { border-bottom: 0; }
+  thead th { font-family: var(--font-mono); font-size: 0.7rem; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: var(--sunk); white-space: nowrap; }
+  td.name { font-weight: 600; white-space: nowrap; }
+  td.name small { display: block; font-weight: 400; color: var(--muted); font-size: 0.78rem; }
+  td.key code { white-space: nowrap; }
+  table.wrap td.name { white-space: normal; min-width: 170px; max-width: 240px; }
+  .req { font-family: var(--font-mono); font-size: 0.7rem; color: var(--ok); border: 1px solid var(--ok); border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+
+  .pill { display: inline-block; font-family: var(--font-mono); font-size: 0.72rem; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
+  .pill.done { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); }
+  .pill.hold { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+  .pill.wait { color: var(--muted); }
+
+  pre { margin: 0; padding: 16px 18px; overflow: auto; font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.6; color: var(--ink); tab-size: 2; }
+  pre .c { color: var(--muted); }
+  pre.solo { border: 1px solid var(--line); border-radius: 8px; background: var(--sunk); }
+
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .two > * { min-width: 0; }
+  .col { display: flex; flex-direction: column; gap: 12px; }
+
+  table.wide { min-width: 860px; }
+  table.mid { min-width: 720px; }
+
+  footer { font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 20px; }
+
+  @media (max-width: 920px) {
+    .layout { grid-template-columns: minmax(0, 1fr); gap: 28px; }
+    .index { position: static; flex-direction: row; flex-wrap: wrap; gap: 4px 16px; }
+    .index .label { width: 100%; margin: 6px 0 0; }
+  }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<div class="page">
+<div class="layout">
+
+<nav class="index" aria-label="Sections">
+  <span class="label">Overview</span>
+  <a href="#short">In short</a>
+  <a href="#container">How it runs</a>
+  <span class="label">Design</span>
+  <a href="#plugins">Plugins</a>
+  <a href="#graph">The flow as a graph</a>
+  <a href="#start">What starts a run</a>
+  <a href="#models">Models</a>
+  <span class="label">Operation</span>
+  <a href="#data">What is stored</a>
+  <a href="#recovery">Recovery</a>
+  <a href="#interfaces">Pages, API and CLI</a>
+  <span class="label">Project</span>
+  <a href="#project">Project layout</a>
+  <a href="#checked">Checked and not checked</a>
+</nav>
+
+<main>
+
+<header class="top">
+  <span class="label">Reference · agentflow</span>
+  <h1>Triage Flow Architecture</h1>
+  <p class="lede">agentflow is a small engine that runs triage flows over items fetched from a source. This page describes its parts: the container it runs in, the four plugin folders, the flow as a graph, what is stored, and the pages, API and commands.</p>
+</header>
+
+<section id="short">
+  <h2>In short</h2>
+  <div class="cards">
+    <div><b>One image, one process</b><span><code>docker compose up</code> starts one container. One process in it serves the pages and the API, keeps the schedules and runs the flows. There is no queue service.</span></div>
+    <div><b>The flow is the unit</b><span>A run is always a run of one flow. It ends with a report in the run folder. The engine sends nothing anywhere.</span></div>
+    <div><b>Source hands over, flow accepts, engine routes</b><span>A source says how items are got and what it writes. A flow says which source it accepts, which of its items, and when. The engine fetches, checks and routes.</span></div>
+    <div><b>A graph with bounded loops</b><span>A flow compiles to stages joined by pass edges and fail edges. A loop exists only on a fail edge, and <code>tries</code> bounds it.</span></div>
+    <div><b>Agents inside, scripts beside</b><span>Agents run in the engine's process on Pydantic AI and get only the tools they list. Scripts are plain child processes in the same container.</span></div>
+    <div><b>A folder per item</b><span>Every stage reads and writes the item's work folder. It is the hand-over between stages and the evidence afterwards.</span></div>
+    <div><b>Facts stored, status derived</b><span>One SQLite file holds runs, items, tries, verdicts and events. The pages, the API and the CLI read the same rows, so they agree.</span></div>
+  </div>
+</section>
+
+<section id="container">
+  <h2>How it runs</h2>
+  <p>The engine runs inside one Docker image, built from the <code>Dockerfile</code> at the project root. Nothing of yours is in the image. <code>compose.yaml</code> attaches the settings, the plugins and the data folder when the container starts.</p>
+<pre class="solo"><span class="c">this machine                        one container · image agentflow · user agentflow, uid 1000</span>
+browser         ─ 127.0.0.1:8321 ─→ agentflow serve     <span class="c">pages · JSON API · event stream · scheduler · tool health · watchdog</span>
+agentflow.yaml  ─ read-only ──────→   └─ runner         <span class="c">fetch · queue · stage loop · report</span>
+plugins/        ─ read-only ──────→       ├─ scripts    <span class="c">fetch · run · check: child processes behind guard.py</span>  ─→ network
+.env            ─ as environment ─→       └─ agents     <span class="c">in the engine's process, on Pydantic AI</span>               ─→ model provider
+data/           ←─ read-write ────→            └─ tools <span class="c">a script per call, or an MCP server per agent run</span>     ─→ network
+                                    data/db/agentflow.db · data/runs/&lt;date&gt;-&lt;run id&gt;/</pre>
+  <div class="two">
+    <div class="col">
+      <h3>The image</h3>
+      <div class="scroll"><table><tbody>
+        <tr><td class="key">Base</td><td><code>python:3.12-slim</code></td></tr>
+        <tr><td class="key">Programs for scripts</td><td><code>python3</code>, <code>git</code>, <code>jq</code>, <code>curl</code>, CA certificates</td></tr>
+        <tr><td class="key">The engine</td><td><code>pyproject.toml</code> and <code>agentflow/</code>, installed with pip. <code>.dockerignore</code> keeps every other file out.</td></tr>
+        <tr><td class="key">User and home</td><td><code>agentflow</code>, uid 1000 · <code>AGENTFLOW_HOME=/work</code></td></tr>
+        <tr><td class="key">Starts</td><td><code>agentflow serve --host 0.0.0.0</code> on port 8321. Any other command replaces <code>serve</code>.</td></tr>
+      </tbody></table></div>
+<pre class="solo">docker compose up                                  <span class="c"># the pages on http://localhost:8321</span>
+docker compose run --rm agentflow check            <span class="c"># any command of the CLI</span>
+docker compose run --rm agentflow run vuln-triage</pre>
+      <p class="fine">Each <code>docker compose run</code> is a container of its own on the same <code>data/</code>; the pages show its runs, because they read the same store. To give scripts or MCP servers another program, add it to the <code>apt-get install</code> line of the <code>Dockerfile</code> and build the image again.</p>
+    </div>
+    <div class="col">
+      <h3>compose.yaml</h3>
+<pre class="solo">services:
+  agentflow:
+    build: .
+    image: agentflow
+    init: true                          <span class="c"># ends what a stopped script leaves behind</span>
+    ports: ["127.0.0.1:8321:8321"]      <span class="c"># this machine only: there is no sign-in</span>
+    environment:
+      TZ: ${TZ:-UTC}                    <span class="c"># schedules are read in this time zone</span>
+    env_file:
+      - path: .env                      <span class="c"># model keys, and the secrets granted to plugins</span>
+        required: false
+    volumes:
+      - ./agentflow.yaml:/work/agentflow.yaml:ro
+      - ./plugins:/work/plugins:ro      <span class="c"># flows, agents, tools, sources</span>
+      - ./data:/work/data               <span class="c"># runs, reports and the database</span>
+      <span class="c"># - ~/code/product:/mnt/product:ro   # any other folder your scripts read</span></pre>
+    </div>
+  </div>
+  <div class="two">
+    <div class="col">
+      <h3>What the container protects</h3>
+      <ul>
+        <li><b>The host.</b> The container is the boundary between scripts and the machine. A script sees the image and the attached folders, and nothing else of the machine.</li>
+        <li><b>The port.</b> 8321 is bound to <code>127.0.0.1</code> only. A change through the API needs the header <code>X-Agentflow: 1</code>.</li>
+        <li><b>What a script is handed.</b> Its environment holds <code>PATH</code>, <code>LANG</code>, <code>AGENTFLOW_FLOW_DIR</code>, <code>AGENTFLOW_ITEM_ID</code>, <code>AGENTFLOW_TRIAL</code> in a trial, and the secrets granted to its plugin under <code>grants:</code> in <code>agentflow.yaml</code>. A source's fetch script gets <code>PATH</code>, <code>LANG</code>, <code>AGENTFLOW_OUT</code> (its output folder) and its granted secrets. A tool's health script gets what a call of the tool gets. Model keys are not passed on.</li>
+        <li><b>Stopping.</b> A script starts behind <code>agentflow/guard.py</code> in its own process group. The group is stopped when the script passes 120 seconds, when its item runs out of time, when its run is cancelled, and when the engine goes away.</li>
+        <li><b>Agents.</b> An agent has no shell. Its file tools stay inside the item's folder: no absolute path, no <code>..</code>, no symbolic link, no writing the engine's files.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>What it does not protect</h3>
+      <p class="note">Inside the container a script is a plain child process. It can read whatever is mounted in the container, and it can reach the network.</p>
+      <ul>
+        <li>Nothing separates one script from another. A script runs as the same user as the engine.</li>
+        <li>A script can read <code>agentflow.yaml</code>, every plugin, and all of <code>data/</code>: other items, other runs, the database. It can write anywhere in <code>data/</code>.</li>
+        <li>There is no network rule per plugin. <code>grants:</code> names secrets only: it decides what a script is handed, not what it can reach.</li>
+        <li>No plugin file mentions Docker. Every flow shares the one image, and <code>compose.yaml</code> sets no CPU or memory limit.</li>
+        <li>An MCP server is started by the MCP client, not behind the guard. A script that moves itself to another session ends when the container does.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="plugins">
+  <h2>Plugins</h2>
+  <p>Four kinds, one folder each under <code>plugins/</code>. Kind and name come from the folder path. A key that is not listed here is an error in <code>agentflow check</code>.</p>
+  <div class="scroll"><table class="wrap wide">
+    <thead><tr><th>Folder</th><th>Files</th><th>Keys</th><th>In the project</th></tr></thead><tbody>
+    <tr><td class="name"><code>flows/&lt;name&gt;/</code></td><td><code>flow.yaml</code> · <code>FLOW.md</code>, the goal, told to every agent in the flow · <code>stages/&lt;id&gt;.md</code> · <code>scripts/</code></td><td><code>source</code> <span class="req">required</span> <code>stages</code> <span class="req">required</span> <code>where</code> <code>schedule</code> <code>model</code> <code>limits</code></td><td><code>vuln-triage</code>, with <code>fixtures/</code> of four invented tickets</td></tr>
+    <tr><td class="name"><code>agents/&lt;name&gt;/</code></td><td><code>AGENT.md</code>: front matter on top, the method underneath</td><td><code>description</code> <span class="req">required</span> <code>tools</code> <code>model</code></td><td><code>origin-analyst</code></td></tr>
+    <tr><td class="name"><code>tools/&lt;name&gt;/</code></td><td><code>tool.yaml</code>, and the script or server it names</td><td><code>description</code> <span class="req">required</span> then <code>run</code> with <code>args</code> and <code>health</code> <span class="req">required</span>, or <code>mcp</code></td><td><code>sbom-query</code>, <code>deps-why</code></td></tr>
+    <tr><td class="name"><code>sources/&lt;name&gt;/</code></td><td><code>source.yaml</code>, and its fetch script</td><td><code>description</code> <code>run</code> <code>output</code> <span class="req">all required</span> <code>fields</code></td><td><code>security-tickets</code></td></tr>
+  </tbody></table></div>
+  <div class="two">
+    <div class="col">
+<pre class="solo"><span class="c"># plugins/flows/vuln-triage/flow.yaml</span>
+source: security-tickets
+schedule: weekdays 07:00
+
+stages:
+  - id: gather
+    run: scripts/gather.sh
+
+  - id: analyse
+    agent: origin-analyst
+    check: scripts/chain-cites-files.py
+    done_when: The origin is stated, and every link in the chain cites a file in the work folder.
+
+  - id: fix
+    done_when: The fix names a version or an image tag that candidates.json lists as fixed.
+
+  - id: report
+    done_when: report.md covers origin, chain, fix and evidence, and agrees with the earlier stages.</pre>
+      <p class="fine"><code>fix</code> and <code>report</code> name no <code>run</code> and no <code>agent</code>, so the default agent does them, each following its <code>stages/&lt;id&gt;.md</code>. For a named agent that file is optional and is added to the agent's method. For a script stage it is documentation.</p>
+    </div>
+    <div class="col">
+<pre class="solo"><span class="c"># plugins/agents/origin-analyst/AGENT.md, the front matter</span>
+description: Decides whether a vulnerable package reaches a service
+  through its own dependencies, its base image, or both.
+tools: [sbom-query, deps-why]
+
+<span class="c"># plugins/tools/sbom-query/tool.yaml</span>
+description: Find a package in a saved package list. Returns version and layer.
+run: ./run.py
+args: [sbom_file, package]
+health: ./health.sh
+
+<span class="c"># plugins/sources/security-tickets/source.yaml</span>
+description: Open security tickets from the tracker.
+run: ./fetch.sh
+output: tickets.json
+fields: [service, package, fixed_in, severity, summary]</pre>
+      <p class="fine">A tool with <code>mcp: [command, …]</code> in place of <code>run</code> is an MCP server. It is started in the item's folder when an agent run begins and stopped when that run ends. The agent gets every tool the server offers, named <code>&lt;plugin&gt;_&lt;tool&gt;</code>. No plugin in the project uses it.</p>
+      <p class="fine"><code>limits</code> in a flow may set <code>at_once</code>, <code>minutes_per_item</code> and <code>cost_per_run_usd</code>. Left out, the values in <code>agentflow.yaml</code> apply.</p>
+    </div>
+  </div>
+  <div class="scroll"><table class="wrap wide">
+    <thead><tr><th>Stage key</th><th>Meaning</th><th>Left out</th></tr></thead><tbody>
+    <tr><td class="key"><code>id</code> <span class="req">required</span></td><td>The stage's name. Used once per flow. Not <code>end</code>.</td><td></td></tr>
+    <tr><td class="key"><code>run</code></td><td>A script of the flow does the stage. The item arrives as JSON on its input, and the item's folder is its working folder. Exit 0 is done, exit 78 ends the item as done and skips the remaining stages, any other code fails the item.</td><td rowspan="2">The default agent does the stage.</td></tr>
+    <tr><td class="key"><code>agent</code></td><td>A named agent does the stage, with its own method and tools. Not together with <code>run</code>.</td></tr>
+    <tr><td class="key"><code>model</code></td><td>The model for the agent doing this stage. Not on a script stage.</td><td>The agent's, then the flow's, then the default.</td></tr>
+    <tr><td class="key"><code>check</code></td><td>A script of the flow validates the stage. Exit 0 passes. Any other code fails, and what it printed is the reason.</td><td>No script check.</td></tr>
+    <tr><td class="key"><code>done_when</code></td><td>One sentence that the built-in checker judges from the files. The agent doing the stage is told it up front.</td><td rowspan="2">No reviewer. With no <code>check</code> either, the stage passes when its work ends.</td></tr>
+    <tr><td class="key"><code>review</code></td><td>A named agent reviews, in place of the built-in checker. Not the agent that does the stage.</td></tr>
+    <tr><td class="key"><code>tries</code></td><td>How many rejected tries the stage is allowed, 1 to 5.</td><td>2</td></tr>
+    <tr><td class="key"><code>next</code></td><td>Where an accepted item goes. <code>end</code> ends the item.</td><td>The stage written after it; the last stage goes to the end.</td></tr>
+    <tr><td class="key"><code>on_fail</code></td><td>Where a rejected item goes: this stage or an earlier one. Needs <code>check</code>, <code>done_when</code> or <code>review</code>.</td><td>The stage itself.</td></tr>
+  </tbody></table></div>
+  <h3>The contract between a source and a flow</h3>
+  <div class="scroll"><table class="wrap wide">
+    <thead><tr><th>Who</th><th>Says</th><th>The engine</th></tr></thead><tbody>
+    <tr><td class="name">Source</td><td><code>run</code>: how and where the items are got. <code>output</code>: the JSON file its script writes into the fetch's own folder, given in <code>AGENTFLOW_OUT</code>. <code>fields</code>: what every item has.</td><td>Runs the script with the source's granted secrets. Reads the file: a JSON list of objects, each with a text <code>id</code> made of letters, digits, <code>.</code>, <code>_</code> or <code>-</code>, no id twice, every listed field present. Anything else is a failed fetch, and no flow gets an item.</td></tr>
+    <tr><td class="name">Flow</td><td><code>source</code>: the source it accepts. <code>where</code>: a field and the value, or list of values, an item must have, for example <code>where: {severity: [high, medium]}</code>. <code>schedule</code>: when.</td><td>Refuses a <code>where</code> on a field the source does not list. Hands the flow only the items that match. Flows on the same source that come due in the same slot share one fetch.</td></tr>
+  </tbody></table></div>
+  <p class="fine">A source has no schedule and starts nothing: it is fetched when a flow that accepts it starts. A tool script gets its <code>args</code> in order as separate values, runs in the item's folder, and what it prints is the tool's answer. Its <code>health</code> script exits with 0 when the tool works; an MCP server is healthy when it starts and lists its tools. The server checks every tool when it starts, every five minutes and on request, and keeps the last answer. Every agent also gets <code>list_files</code>, <code>read_file</code>, <code>write_file</code> and <code>ask_for_person</code>; a reviewer gets no <code>write_file</code>. An agent run is capped at 20 model calls. A run copies the plugin files its flow uses into its own folder and executes from that copy.</p>
+</section>
+
+<section id="graph">
+  <h2>The flow as a graph and the stage loop</h2>
+  <p><code>agentflow/graph.py</code> compiles the list in <code>flow.yaml</code> to a graph. The engine walks that graph, a resumed item is placed on it, and the pages draw it. <code>agentflow/stages.py</code> takes one item along it.</p>
+  <div class="two">
+    <div class="col">
+      <h3>Two kinds of edge</h3>
+      <ul>
+        <li><b>Pass.</b> An accepted stage goes to <code>next</code>.</li>
+        <li><b>Fail.</b> A rejected stage goes to <code>on_fail</code>: to itself, which tries again with the reason, or to an earlier stage, which runs again with the reason while the item works its way forward again.</li>
+        <li>An agent is told its own rejected tries, and the rejections of later stages that sent the item back since it last ran. A script is told nothing; it is run again.</li>
+        <li>A stage has one way forward and one way back. There is no branching on content, no parallel stages and no flow inside a flow.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>What compiling refuses</h3>
+      <ul>
+        <li>A stage with no id, one id used twice, or a stage called <code>end</code>.</li>
+        <li><code>next</code> or <code>on_fail</code> naming something that is not a stage.</li>
+        <li>A loop on pass edges, and a stage nothing leads to.</li>
+        <li><code>on_fail</code> on a stage with nothing that can fail, or naming a later stage.</li>
+        <li><code>tries</code> outside 1 to 5.</li>
+      </ul>
+    </div>
+  </div>
+<pre class="solo">one try of one stage:   do ──→ check script ──→ reviewer ──→ decide      <span class="c"># the first fail ends the try</span></pre>
+  <div class="scroll"><table class="wrap mid">
+    <thead><tr><th>What happens in a try</th><th>The item</th></tr></thead><tbody>
+    <tr><td>Every validation passes, or the stage has none</td><td>follows the pass edge</td></tr>
+    <tr><td>A check or a reviewer fails, and the stage has tries left</td><td>follows the fail edge, with the reason</td></tr>
+    <tr><td>Out of tries · a reviewer asks for a person · a reviewer errors · the agent calls <code>ask_for_person</code></td><td>ends as <span class="pill hold">needs a person</span></td></tr>
+    <tr><td>A stage script exits with an error · a model call fails</td><td>ends as <span class="pill wait">failed</span></td></tr>
+    <tr><td>A stage script exits with 78</td><td>ends as <span class="pill done">done</span>; the remaining stages are skipped</td></tr>
+    <tr><td><code>minutes_per_item</code> is used up · the run has spent <code>cost_per_run_usd</code> · the run is cancelled</td><td>ends as <span class="pill wait">timed out</span> <span class="pill wait">stopped at cost cap</span> <span class="pill wait">cancelled</span></td></tr>
+  </tbody></table></div>
+  <p class="fine">Nothing passes by default. Only a try that validation rejected counts against <code>tries</code>; a try cut short by a stopped process does not. The reviewer is a separate agent run with read-only file tools and no memory of the work.</p>
+</section>
+
+<section id="start">
+  <h2>What starts a run</h2>
+  <p>A run is always a run of one flow. A person starts it, or the flow's own schedule does. A source starts nothing.</p>
+  <div class="scroll"><table class="wrap wide">
+    <thead><tr><th>Start</th><th>How</th><th>What happens</th></tr></thead><tbody>
+    <tr><td class="name">A person</td><td><b>Run</b> on the flow's page · <code>POST /api/flows/{flow}/run</code> · <code>agentflow run &lt;flow&gt;</code></td><td>The flow's source is fetched, and this flow alone runs over the items it accepts.</td></tr>
+    <tr><td class="name">A person, every item</td><td><b>Run all again</b> on the flow's page · the same request with <code>{"force": true}</code> · <code>agentflow run &lt;flow&gt; --force</code></td><td>The same, and nothing is carried over.</td></tr>
+    <tr><td class="name">A schedule</td><td><code>schedule:</code> in <code>flow.yaml</code>, switched on with the switch on the flow's page, <code>POST /api/flows/{flow}/schedule</code> or <code>agentflow schedule on &lt;flow&gt;</code></td><td>The flow's source is fetched and the flow runs. Flows on one source that are due in the same slot share the fetch. <code>agentflow serve</code> keeps the schedules and looks every 30 seconds. A schedule is off until it is switched on. Missed slots count as one.</td></tr>
+    <tr><td class="name">A trial</td><td><code>agentflow try &lt;flow&gt; [--item ID]</code></td><td>One item through the real stages, in a run folder of its own. Stage scripts and tools get <code>AGENTFLOW_TRIAL=1</code> and no granted secrets. A trial does not count as done.</td></tr>
+  </tbody></table></div>
+  <ul>
+    <li><b>The order of a run.</b> Fetch the source into its own folder, check what it handed over, queue the items the flow accepts, work up to <code>at_once</code> of them in parallel, render the report, end the run.</li>
+    <li><b>Carried over.</b> An item whose content is the same, and that ended as done or needs a person in an earlier run of this flow, is not worked again. Its row points at the earlier folder, and it costs nothing.</li>
+    <li><b>Refused at the start.</b> A flow that does not pass its checks, and a flow that uses a model whose key is not set.</li>
+    <li><b>The report is the output.</b> A run ends with <code>report/index.html</code> and one page per item in its folder. The engine sends nothing anywhere. Posting a result somewhere is a flow's own stage script or tool, with a granted secret.</li>
+  </ul>
+</section>
+
+<section id="models">
+  <h2>Models</h2>
+  <div class="two">
+    <div class="col">
+<pre class="solo"><span class="c"># agentflow.yaml</span>
+models:
+  luna:
+    provider: openai            <span class="c"># openai | litellm</span>
+    name: gpt-6-luna
+    api_key_env: OPENAI_API_KEY <span class="c"># the variable, never the key</span>
+    api: responses              <span class="c"># responses | chat</span>
+    reasoning: low              <span class="c"># none | low | medium | high</span>
+model: luna                     <span class="c"># the platform default</span>
+limits:
+  at_once: 4
+  minutes_per_item: 10
+  cost_per_run_usd: 2.00
+grants: {}                      <span class="c"># e.g. sources/security-tickets: {secrets: [TRACKER_TOKEN]}</span></pre>
+    </div>
+    <div class="col">
+      <ul>
+        <li>A model is a named entry under <code>models:</code>, with its own key variable. A <code>litellm</code> entry also takes <code>base_url</code>.</li>
+        <li><b>Picked in this order:</b> <code>model:</code> on the stage, in the agent's <code>AGENT.md</code>, in <code>flow.yaml</code>, then the platform default.</li>
+        <li>A reviewer uses its own agent's model, then the flow's, then the default.</li>
+        <li>Keys come from the environment. <code>agentflow/agents.py</code> is the only module that knows about providers.</li>
+        <li>The pages show no global model. The model is shown on the flow, the stage, the agent, and each try in the trace.</li>
+        <li><code>--stand-in</code> swaps in a scripted model that needs no key and costs nothing. It only knows <code>vuln-triage</code>.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="data">
+  <h2>What is stored</h2>
+  <div class="two">
+    <div class="col">
+<pre class="solo">data/
+├── db/agentflow.db          <span class="c"># the store: SQLite, WAL</span>
+├── fetches/
+│   └── &lt;date&gt;-&lt;n&gt;-&lt;source&gt;/ <span class="c"># what one fetch wrote, as it wrote it</span>
+└── runs/
+    └── &lt;date&gt;-&lt;run id&gt;/     <span class="c"># one folder per run or trial</span>
+        ├── plugins/         <span class="c"># the plugin files as the run first saw them</span>
+        ├── items/
+        │   └── &lt;item id&gt;/   <span class="c"># the item's work folder</span>
+        │       ├── events.jsonl  <span class="c"># what happened to this item</span>
+        │       ├── attempts/     <span class="c"># &lt;stage&gt;-&lt;n&gt;.prompt.md: what each try was told</span>
+        │       ├── verdicts/     <span class="c"># &lt;stage&gt;-&lt;n&gt;.md: what each validation said</span>
+        │       └── …             <span class="c"># the files the stages wrote</span>
+        └── report/          <span class="c"># index.html, &lt;item id&gt;.html</span></pre>
+      <p class="fine">Every name here is defined once, in <code>agentflow/layout.py</code>. The store keeps folders relative to <code>data/</code>, so the data folder can be moved. <code>events.jsonl</code>, <code>attempts/</code> and <code>verdicts/</code> belong to the engine: an agent's <code>write_file</code> refuses them. A run id starts with <code>r_</code>, a trial's with <code>t_</code>.</p>
+    </div>
+    <div class="col">
+      <div class="scroll"><table>
+        <thead><tr><th>Table</th><th>One row per</th></tr></thead><tbody>
+        <tr><td class="key"><code>schedules</code></td><td>Flow with a schedule: on or off, and when it is next due.</td></tr>
+        <tr><td class="key"><code>fetches</code></td><td>Fetch of a source: its folder, outcome and item count. Unique on source and slot, so a slot is fetched once.</td></tr>
+        <tr><td class="key"><code>health</code></td><td>Tool: whether its last check passed, what it said, and when.</td></tr>
+        <tr><td class="key"><code>runs</code></td><td>Run of one flow: source, fetch, plugin hash, trial, folder, last sign of life, cancel request, what it is a retry of.</td></tr>
+        <tr><td class="key"><code>items</code></td><td>Item in a run: fingerprint, folder, how it ended and why, where it was carried from, the item as fetched.</td></tr>
+        <tr><td class="key"><code>attempts</code></td><td>Try at a stage: who did it, start, end, outcome, model calls, tool calls, tokens, cost.</td></tr>
+        <tr><td class="key"><code>verdicts</code></td><td>Validation of a try: by whom, pass or fail, the reason, whether a person is needed.</td></tr>
+        <tr><td class="key"><code>events</code></td><td>Thing that happened, in order: run, item, stage, type, data. Append-only.</td></tr>
+      </tbody></table></div>
+      <p class="fine">Facts go in and status is worked out when asked, in <code>agentflow/status.py</code>. Claiming an item, ending an item and taking over a run are single conditional updates, so there is one winner. A cost that was not recorded is not zero: it shows as a dash, or as <code>≥</code> a partial sum.</p>
+    </div>
+  </div>
+</section>
+
+<section id="recovery">
+  <h2>Recovery</h2>
+  <p>Nothing in <code>agentflow/recovery.py</code> acts by itself. The watchdog records; a person or a command decides.</p>
+  <div class="scroll"><table class="wrap wide">
+    <thead><tr><th>Part</th><th>How it works</th><th>Command · endpoint</th></tr></thead><tbody>
+    <tr><td class="name">Sign of life</td><td>The process doing a run writes a time to the run's row every 5 seconds. A run with no ending and no sign of life for 60 seconds shows as interrupted.</td><td></td></tr>
+    <tr><td class="name">Watchdog</td><td>Every 15 seconds inside <code>agentflow serve</code>, and at the start of a resume or a cancel. It closes the open tries of a quiet run as interrupted and adds an event. It never resumes and never cleans up.</td><td></td></tr>
+    <tr><td class="name">Resume</td><td>Takes over an interrupted run. A run that is alive or finished is refused. An item that had ended is left alone. An unfinished item is put back on the graph where its latest try left it, in its own folder, with the reasons of its rejected tries.</td><td><code>agentflow resume &lt;run&gt;</code> · <code>POST /api/runs/{run}/resume</code> · Resume on the run's page</td></tr>
+    <tr><td class="name">Retry</td><td>For an item that has ended. A new run of that one item, with the plugin files as they are on disk. It starts at the stage the item stopped at, or at the first stage if the item was done. Its folder starts as a copy of the old one, and the earlier stages are kept. The old run is not changed.</td><td><code>agentflow retry &lt;run&gt; &lt;item&gt;</code> · <code>POST /api/runs/{run}/items/{item}/retry</code> · Retry on the item's page</td></tr>
+    <tr><td class="name">Cancel</td><td>In a live run, a running stage script or check script is stopped within half a second and its item ends as cancelled. An agent finishes its try, then its item stops. A run whose process is gone is closed on the spot. Folders are kept.</td><td><code>agentflow cancel &lt;run&gt;</code> · <code>POST /api/runs/{run}/cancel</code> · Cancel on the run's page</td></tr>
+  </tbody></table></div>
+</section>
+
+<section id="interfaces">
+  <h2>Pages, API and CLI</h2>
+  <p>FastAPI renders the pages on the server from Jinja2 templates. A page of a run that is still going follows one server-sent event stream and asks for its changed part again. The sidebar reads Runs, then Design: Flows, Agents, Tools, Sources, then System: Settings. Under them, on every page, is <b>Needs attention</b>: plugin files to fix, a flow that could not start, a failing tool, an interrupted run, and items of a flow's latest run that need a person.</p>
+  <div class="scroll"><table class="wrap wide">
+    <thead><tr><th>Page</th><th>Tabs</th><th>Shows</th></tr></thead><tbody>
+    <tr><td class="name">Runs <small><code>/</code></small></td><td></td><td>One row per run: flow, start and what started it, status, items, cost, duration, and the link to its report. Nothing starts here. With no run yet: the three steps from a source to a run.</td></tr>
+    <tr><td class="name">Run <small><code>/runs/{run}</code></small></td><td>Items · Trace · Log · Flow</td><td>The items with status, stage, reason, cost and work folder. The trace as a tree with a detail pane. The live log. The flow's graph with this run's numbers. Resume and Cancel when they apply.</td></tr>
+    <tr><td class="name">Item <small><code>/runs/{run}/items/{item}</code></small></td><td>Output · Trace · Files · Log</td><td>The rendered report. The trace down to each model call and tool call. The work folder as a file tree with a preview. Retry.</td></tr>
+    <tr><td class="name">Flow <small><code>/flows/{name}</code></small></td><td>Design · Files · Runs</td><td>Run and Run all again. The schedule and its switch. A warning when a tool its agents use is failing. The graph drawn top to bottom, pass edges solid and fail edges dashed, beside every key of <code>flow.yaml</code> and what the engine fills in.</td></tr>
+    <tr><td class="name">Agent, tool, source <small><code>/agents/{name}</code> <code>/tools/{name}</code> <code>/sources/{name}</code></small></td><td>Config · Method · Files<br>Config · Files<br>Config · Fetches · Files</td><td>What the file says, what uses it, and the files as a tree with a preview. A tool has its health, with Check now. A source has what it hands over, the flows that accept it, and each fetch with its folder and the runs it fed.</td></tr>
+    <tr><td class="name">Lists <small><code>/flows</code> <code>/agents</code> <code>/tools</code> <code>/sources</code></small></td><td></td><td>Flows: source, schedule, last run. Agents: description, model. Tools: health, description, kind, with Check all. Sources: description, output, last fetch.</td></tr>
+    <tr><td class="name">Settings <small><code>/settings</code></small></td><td></td><td>Read-only: models with their key variable and whether it is set, limits, folders, grants. A key's value is never on a page.</td></tr>
+  </tbody></table></div>
+  <div class="two">
+    <div class="col">
+<pre class="solo"><span class="c"># every page has a JSON twin: /api + the page's path</span>
+GET  /api/runs   /api/runs/{run}   /api/runs/{run}/items/{item}
+GET  /api/flows  /api/agents  /api/tools  /api/sources  /api/settings
+GET  /api/events?run=…&amp;item=…&amp;after=SEQ    <span class="c"># replays, then follows</span>
+<span class="c"># changes need the header X-Agentflow: 1</span>
+POST /api/flows/{flow}/run                  <span class="c"># {"force": false}</span>
+POST /api/flows/{flow}/schedule             <span class="c"># {"enabled": true}</span>
+POST /api/tools/health   /api/tools/{name}/health   <span class="c"># check now</span>
+POST /api/runs/{run}/resume   /api/runs/{run}/cancel
+POST /api/runs/{run}/items/{item}/retry</pre>
+      <p class="fine">Tabs are addresses: <code>/runs/{run}/trace</code>, <code>/flows/{name}/files</code>. A run's report is at <code>/runs/{run}/report/index.html</code>. There is no sign-in.</p>
+    </div>
+    <div class="col">
+<pre class="solo">agentflow check                        <span class="c"># plugin files, settings, tool health</span>
+agentflow try &lt;flow&gt; [--item ID]       <span class="c"># a trial of one item</span>
+agentflow run &lt;flow&gt; [--force]         <span class="c"># fetch the source, run the flow</span>
+agentflow schedule [on|off &lt;flow&gt;]     <span class="c"># show or switch schedules</span>
+agentflow serve [--port 8321]          <span class="c"># pages, API, schedules, tool health</span>
+agentflow show                         <span class="c"># recent runs</span>
+agentflow show &lt;run&gt; [item] [--follow] <span class="c"># what a run did and cost</span>
+agentflow resume &lt;run&gt;   agentflow retry &lt;run&gt; &lt;item&gt;   agentflow cancel &lt;run&gt;</pre>
+      <p class="fine"><code>try</code>, <code>run</code>, <code>resume</code>, <code>retry</code> and <code>serve</code> take <code>--stand-in</code>. In the container, put <code>docker compose run --rm</code> in front of a command.</p>
+    </div>
+  </div>
+</section>
+
+<section id="project">
+  <h2>Project layout</h2>
+  <div class="two">
+    <div class="col">
+<pre class="solo">Dockerfile       <span class="c"># the image: the engine and the programs scripts call</span>
+compose.yaml     <span class="c"># what is attached, and the port</span>
+agentflow.yaml   <span class="c"># models, limits, grants</span>
+pyproject.toml   <span class="c"># the package and what it needs</span>
+.env             <span class="c"># model keys and granted secrets</span>
+agentflow/       <span class="c"># the engine package</span>
+plugins/         <span class="c"># flows, agents, tools, sources</span>
+tests/           <span class="c"># test_engine.py, test_recovery.py, test_web.py</span>
+docs/            <span class="c"># this page and other documents</span>
+data/            <span class="c"># everything the engine writes</span></pre>
+      <p class="fine">The engine writes only under <code>data/</code>. The pages and the command line read the engine; the engine never imports them.</p>
+    </div>
+    <div class="col">
+<pre class="solo">agentflow/
+├── settings.py  plugins.py   <span class="c"># agentflow.yaml · load, check and copy the plugin folders</span>
+├── graph.py  stages.py       <span class="c"># a flow compiled · one item on the graph: do, validate, decide</span>
+├── agents.py  stand_in.py    <span class="c"># one agent run: model, tools, cost · the scripted model</span>
+├── procs.py  guard.py        <span class="c"># scripts as child processes · stops a script with the engine</span>
+├── runner.py  schedule.py    <span class="c"># fetch, route, work, finish · which flows are due, on and off</span>
+├── health.py                 <span class="c"># whether each tool works right now</span>
+├── recovery.py               <span class="c"># watchdog, resume, retry, cancel</span>
+├── store.py  layout.py  status.py   <span class="c"># the store · every path name, once · states and their words, once</span>
+├── trace.py  render.py       <span class="c"># a run as a tree of timed spans · the report pages</span>
+├── cli.py  __main__.py       <span class="c"># one function per command</span>
+└── web/                      <span class="c"># __init__.py (routes), views.py, catalog.py, show.py, draw.py, templates/, static/</span></pre>
+    </div>
+  </div>
+</section>
+
+<section id="checked">
+  <h2>Checked and not checked</h2>
+  <div class="scroll"><table class="wrap mid">
+    <thead><tr><th>What</th><th>State</th><th>Detail</th></tr></thead><tbody>
+    <tr><td class="name">Tests</td><td><span class="pill done">checked</span></td><td>41 tests pass on the scripted stand-in model: 19 on the engine, 6 on recovery, 16 on the pages.</td></tr>
+    <tr><td class="name">In the container</td><td><span class="pill done">checked</span></td><td>On a Mac with Docker Desktop: the image builds, the server starts and checks the tools, and a flow runs from its page.</td></tr>
+    <tr><td class="name">The real model</td><td><span class="pill done">checked</span></td><td>In the container, one run of the four invented tickets, started from the flow's page: 2 done, 2 for a person, 45 seconds, $0.0074.</td></tr>
+    <tr><td class="name">A schedule in the container</td><td><span class="pill hold">not checked</span></td><td>A due schedule starting its flow is tested outside the container only.</td></tr>
+    <tr><td class="name">Linux hosts</td><td><span class="pill hold">not checked</span></td><td>The image runs as uid 1000, so a host user with another uid may not be able to write <code>data/</code>.</td></tr>
+    <tr><td class="name">A second model provider</td><td><span class="pill hold">not checked</span></td><td>The LiteLLM entry is built and has never been called.</td></tr>
+    <tr><td class="name">MCP with a real model</td><td><span class="pill hold">not checked</span></td><td>The tests call a small MCP server from the scripted model only.</td></tr>
+    <tr><td class="name">Sign-in</td><td><span class="pill wait">none</span></td><td>Anyone who can reach the port can start runs and read every work folder.</td></tr>
+  </tbody></table></div>
+</section>
+
+<footer>
+  Saved in the project as <code>docs/triage-flow-architecture.html</code>. To check the plugin files and the settings: <code>docker compose run --rm agentflow check</code>.
+</footer>
+
+</main>
+</div>
+</div>

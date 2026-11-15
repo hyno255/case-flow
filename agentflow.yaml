@@ -1,0 +1,22 @@
+# Platform settings. A plugin picks a model by name; keys stay in the environment.
+
+models:                       # every model the flows may use, by a name of your choosing
+  luna:
+    provider: openai            # openai | litellm
+    name: gpt-6-luna
+    api_key_env: OPENAI_API_KEY # the variable that holds the key. The key goes in .env or the environment, never in a file here
+    api: responses              # responses | chat
+    reasoning: low              # none | low | medium | high
+  # through a LiteLLM proxy:
+  # proxy-small: {provider: litellm, name: some-model, base_url: http://localhost:4000, api_key_env: LITELLM_KEY, api: chat, reasoning: none}
+
+model: luna                   # the default. A flow, a stage or an agent can name another with `model:`
+
+limits:                       # defaults; a flow's own `limits` wins
+  at_once: 4
+  minutes_per_item: 10
+  cost_per_run_usd: 2.00
+
+grants: {}                    # the secrets a plugin's scripts may see, by variable name; a script sees no other, e.g.
+#  sources/security-tickets:
+#    secrets: [TRACKER_TOKEN]

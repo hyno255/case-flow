@@ -1,0 +1,60 @@
+{# The list of one kind of plugin: flows, agents, tools or sources. #}
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}{{ v.kind | capitalize }} · agentflow{% endblock %}
+{% block heading %}{{ v.kind | capitalize }}{% endblock %}
+{% block actions %}{{ ui.path(v.folder) }}{% if v.kind == "tools" and v.rows %} <button type="button" data-post="/api/tools/health" title="run every tool's health check now">Check all</button>{% endif %}{% endblock %}
+{% block main %}
+<div class="scroll">
+  <table>
+  {% if v.kind == "flows" %}
+    <thead><tr><th>Flow</th><th>Source</th><th>Schedule</th><th>Last run</th></tr></thead>
+    <tbody>
+    {% for f in v.rows %}
+      <tr>
+        <td class="name"><a href="/flows/{{ f.name }}">{{ f.name }}</a>{{ ui.broken(f.errors) }}{% if f.error %} {{ ui.pill("could not start", "bad", f.error) }}{% endif %}</td>
+        <td>{% if f.source %}<a href="/sources/{{ f.source }}">{{ f.source }}</a>{% else %}—{% endif %}</td>
+        <td class="nw">{{ ui.schedule(f.schedule) }}</td>
+        <td class="nw">{% if f.last_run %}<a href="/runs/{{ f.last_run.id }}">{{ f.last_run.id }}</a> {{ ui.pill(f.last_run.status, f.last_run.pill) }} <small>{{ f.last_run.started }}</small>{% else %}<span title="this flow has not run">—</span>{% endif %}</td>
+      </tr>
+    {% else %}<tr><td colspan="4" class="none">No flows.</td></tr>{% endfor %}
+    </tbody>
+  {% elif v.kind == "agents" %}
+    <thead><tr><th>Agent</th><th>Description</th><th>Model</th></tr></thead>
+    <tbody>
+    {% for a in v.rows %}
+      <tr>
+        <td class="name"><a href="/agents/{{ a.name }}">{{ a.name }}</a>{{ ui.broken(a.errors) }}</td>
+        <td>{{ a.description }}</td>
+        <td>{% if a.model_default %}<span title="the stage's, the flow's or the platform's model">—</span>{% else %}<span title="{{ a.model.label }}">{{ a.model.name }}</span>{% endif %}</td>
+      </tr>
+    {% else %}<tr><td colspan="3" class="none">No agents.</td></tr>{% endfor %}
+    </tbody>
+  {% elif v.kind == "tools" %}
+    <thead><tr><th>Tool</th><th>Health</th><th>Description</th><th>Kind</th></tr></thead>
+    <tbody>
+    {% for t in v.rows %}
+      <tr>
+        <td class="name"><a href="/tools/{{ t.name }}">{{ t.name }}</a>{{ ui.broken(t.errors) }}</td>
+        <td class="nw">{{ ui.health(t.health) }}{% if t.health.state == "failing" %} <small>{{ t.health.detail }}</small>{% endif %}</td>
+        <td>{{ t.description }}</td>
+        <td class="nw">{{ t.how }}</td>
+      </tr>
+    {% else %}<tr><td colspan="4" class="none">No tools.</td></tr>{% endfor %}
+    </tbody>
+  {% else %}
+    <thead><tr><th>Source</th><th>Description</th><th>Output</th><th>Last fetch</th></tr></thead>
+    <tbody>
+    {% for s in v.rows %}
+      <tr>
+        <td class="name"><a href="/sources/{{ s.name }}">{{ s.name }}</a>{{ ui.broken(s.errors) }}</td>
+        <td>{{ s.description }}</td>
+        <td class="nw">{% if s.output %}<code>{{ s.output }}</code>{% else %}—{% endif %}</td>
+        <td>{% if s.last_fetch %}{{ s.last_fetch.at }} {{ ui.pill(s.last_fetch.outcome, "done" if s.last_fetch.outcome == "ok" else "run" if s.last_fetch.outcome == "running" else "bad", s.last_fetch.detail) }}{% if s.last_fetch.count is not none %} <small>{{ s.last_fetch.count }} items</small>{% endif %}{% else %}<span title="never fetched">—</span>{% endif %}</td>
+      </tr>
+    {% else %}<tr><td colspan="4" class="none">No sources.</td></tr>{% endfor %}
+    </tbody>
+  {% endif %}
+  </table>
+</div>
+{% endblock %}

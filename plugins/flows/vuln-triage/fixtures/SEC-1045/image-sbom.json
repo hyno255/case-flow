@@ -1,0 +1,1 @@
+{"image": "registry.example/notify-gateway:2026.9.3", "packages": [{"name": "libexample-xml", "version": "2.9.4", "layer": "app (layer 6)"}]}

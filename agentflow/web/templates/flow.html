@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% import "_graph.html" as graph %}
+{% import "_files.html" as files %}
+{% block title %}{{ v.name }} · Flows · agentflow{% endblock %}
+{% block crumbs %}<a href="/flows">Flows</a>{% endblock %}
+{% block heading %}{{ v.name }} {{ ui.check(v.errors) }}{% endblock %}
+{% block live %}{% if v.tab == "runs" %} data-events="/api/events?after={{ v.seq }}"{% endif %}{% endblock %}
+{% block actions %}
+{% if v.can_run %}
+<button type="button" data-post="/api/flows/{{ v.name }}/run" data-body='{"force": true}' data-confirm="Run {{ v.name }} for every item, also the ones already done?" title="every item again, also the ones already done and unchanged">Run all again</button>
+<button type="button" class="primary" data-post="/api/flows/{{ v.name }}/run" data-body='{"force": false}' data-confirm="Run {{ v.name }} now?" title="fetch {{ v.source }} now and run this flow; items already done and unchanged are carried over">Run</button>
+{% endif %}
+{% endblock %}
+{% block tabs %}{{ ui.tabs("/flows/" ~ v.name, [("design", "Design"), ("files", "Files"), ("runs", "Runs")], v.tab) }}{% endblock %}
+{% block main %}
+{{ ui.errors(v.errors) }}
+{% if v.error %}<p class="alert bad">Could not start a run: {{ v.error }}</p>{% endif %}
+{% for t in v.failing_tools or [] %}<p class="alert bad">The tool <a href="/tools/{{ t.name }}">{{ t.name }}</a>, which this flow's agents use, is failing its health check: {{ t.detail }}</p>{% endfor %}
+{% if v.tab == "design" %}
+<div class="design">
+{{ graph.draw(v.graph, "The stages of " ~ v.name ~ " and the ways between them") }}
+<div class="cards">
+  <section class="card">
+    <h2>Flow {% if v.yaml_href %}<a href="{{ v.yaml_href }}">flow.yaml</a>{% endif %}</h2>
+    <table class="kv">
+      <tr><th title="when the engine fetches the source for this flow">schedule</th><td>{{ ui.schedule(v.schedule) }}
+        {% if v.schedule.spec and not v.errors %}<button type="button" class="switch" role="switch" aria-checked="{{ 'true' if v.schedule.enabled else 'false' }}" aria-label="Schedule" title="Switch the schedule {{ 'off' if v.schedule.enabled else 'on' }}"
+                data-post="/api/flows/{{ v.name }}/schedule" data-body='{"enabled": {{ "false" if v.schedule.enabled else "true" }}}'></button>{% endif %}</td></tr>
+    </table>
+    {{ ui.kv(v.config) }}
+  </section>
+  {% if v.goal_html %}
+  <section class="card">
+    <h2>Goal {% if v.goal_href %}<a href="{{ v.goal_href }}">FLOW.md</a>{% endif %}</h2>
+    <div class="prose">{{ v.goal_html | safe }}</div>
+  </section>
+  {% endif %}
+  {% for s in v.stages %}
+  <section class="card" id="stage-{{ s.id }}">
+    <h2><span class="n">{{ loop.index }}</span> {{ s.id }} <span class="tag">{{ s.by }}</span></h2>
+    {{ ui.kv(s.rows) }}
+    {% if s.md_html %}
+    <h3>{% if s.md_href %}<a href="{{ s.md_href }}">{{ s.md }}</a>{% else %}FLOW.md{% endif %}</h3>
+    <div class="prose">{{ s.md_html | safe }}</div>
+    {% endif %}
+  </section>
+  {% else %}
+  <p class="none">No stages.</p>
+  {% endfor %}
+</div>
+</div>
+{% elif v.tab == "files" %}
+{{ files.browser(v, "/flows/" ~ v.name ~ "/files") }}
+{% else %}
+{{ ui.runs_table(v.runs, false) }}
+{% endif %}
+{% endblock %}

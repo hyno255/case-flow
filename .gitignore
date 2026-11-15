@@ -1,0 +1,12 @@
+# secrets, and everything the engine writes
+.env
+data/
+
+# installed, not written here
+.venv/
+node_modules/
+*.egg-info/
+__pycache__/
+
+.DS_Store
+*.log

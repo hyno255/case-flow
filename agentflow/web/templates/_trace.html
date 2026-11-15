@@ -1,0 +1,64 @@
+{# The trace of a run or of one item: a tree of timed spans beside a pane that shows the selected one. Built by trace.build(). #}
+{% macro row(s, selected) %}
+<span class="sp-row{% if s.id == selected %} on{% endif %}" data-span="{{ s.id }}">
+  <span class="sp-name" style="--d: {{ s.depth }}"><i class="tw"></i><i class="kd k-{{ s.kind }}">{{ s.kind }}</i>
+    <a href="?span={{ s.id | urlencode }}">{{ s.name }}</a>
+    {% if s.href %}<a class="go" href="{{ s.href }}" title="Open this item's trace">open</a>{% endif %}
+    {% if s.note %}<small>{{ s.note }}</small>{% endif %}</span>
+  <span class="sp-who" title="{{ s.who }}{% if s.model %} · {{ s.model }}{% endif %}">{{ s.who }}{% if s.model %} · {{ s.model }}{% endif %}</span>
+  <span class="sp-track"><span class="sp-bar k-{{ s.kind }} {{ s.state }}" style="left: {{ s.left }}%; width: {{ s.width }}%"></span></span>
+  <span class="sp-num">{{ s.time }}</span>
+  <span class="sp-num">{% if s.tokens %}{{ s.tokens | num }}{% endif %}</span>
+  <span class="sp-num" title="{{ s.cost_cell.tip }}">{% if s.model_calls or s.cost_unknown %}{{ s.cost_cell.text }}{% endif %}</span>
+</span>
+{% endmacro %}
+
+{% macro span(s, selected, opened) %}
+{% if s.children %}
+<details class="sp" data-id="{{ s.id }}"{% if s.kind in opened %} open{% endif %}>
+  <summary>{{ row(s, selected) }}</summary>
+  {% for c in s.children %}{{ span(c, selected, opened) }}{% endfor %}
+</details>
+{% else %}
+<div class="sp leaf">{{ row(s, selected) }}</div>
+{% endif %}
+{% endmacro %}
+
+{# What one span was, used, was given and answered. All are on the page; the selected one is shown. #}
+{% macro info(s, selected) %}
+<section class="sp-info" data-for="{{ s.id }}"{% if s.id != selected %} hidden{% endif %}>
+  <header><i class="kd k-{{ s.kind }}">{{ s.kind }}</i> <b>{{ s.name }}</b>{% if s.note %} <small>{{ s.note }}</small>{% endif %}</header>
+  <dl>
+    {% if s.who %}<dt>who</dt><dd>{{ s.who }}</dd>{% endif %}
+    {% if s.model %}<dt>model</dt><dd>{{ s.model }}</dd>{% endif %}
+    {% if s.time %}<dt>duration</dt><dd>{{ s.time }}</dd>{% endif %}
+    {% if s.model_calls or s.cost_unknown %}
+    {% if s.kind != "model" %}<dt>model calls</dt><dd>{{ s.model_calls }}</dd>{% endif %}
+    <dt>tokens</dt><dd>{{ s.tokens_in | num }} in · {{ s.tokens_out | num }} out</dd>
+    <dt>cost</dt><dd>{{ s.cost_cell.text }} <small>{{ s.cost_cell.tip }}</small></dd>
+    {% endif %}
+    {% if s.tool_calls and s.kind != "tool" %}<dt>tool calls</dt><dd>{{ s.tool_calls }}</dd>{% endif %}
+    {% for k, val in s.facts %}<dt>{{ k }}</dt><dd>{{ val }}</dd>{% endfor %}
+  </dl>
+  {% for title, text in s.blocks %}<h3>{{ title }}</h3><pre>{{ text }}</pre>{% endfor %}
+</section>
+{% for c in s.children %}{{ info(c, selected) }}{% endfor %}
+{% endmacro %}
+
+{# `opened` names the kinds of span whose rows start open. #}
+{% macro view(t, selected, opened) %}
+<p class="controls"><button type="button" data-trace="open">Open all</button><button type="button" data-trace="close">Close all</button></p>
+<div class="split">
+  <div class="scroll">
+    <div class="trace">
+      <div class="sp-row sp-head">
+        <span>Span</span><span>Who · model</span>
+        <span class="sp-axis">{% for k in t.ticks[:-1] %}<span>{{ k }}</span>{% endfor %}</span>
+        <span class="sp-num">Time</span><span class="sp-num">Tokens</span><span class="sp-num">Cost</span>
+      </div>
+      {{ span(t.root, selected, opened) }}
+    </div>
+  </div>
+  <aside class="pane" aria-label="The selected span">{{ info(t.root, selected) }}</aside>
+</div>
+{% endmacro %}

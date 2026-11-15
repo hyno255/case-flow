@@ -1,0 +1,6 @@
+[
+  {"id": "SEC-1042", "service": "checkout-api",   "package": "libexample-xml",  "fixed_in": "2.9.4", "severity": "high",   "summary": "XML parser reads past a buffer on crafted input. Versions below 2.9.4."},
+  {"id": "SEC-1043", "service": "billing-worker", "package": "zlib-example",    "fixed_in": "1.3.2", "severity": "medium", "summary": "Decompression can exhaust memory. Versions below 1.3.2."},
+  {"id": "SEC-1044", "service": "search-indexer", "package": "libexample-yaml", "fixed_in": "0.2.6", "severity": "high",   "summary": "Unsafe load of tagged values. Advisory says 0.2.6 will fix it."},
+  {"id": "SEC-1045", "service": "notify-gateway", "package": "libexample-png",  "fixed_in": "1.6.40", "severity": "low",   "summary": "Scanner flagged libexample-png in notify-gateway."}
+]

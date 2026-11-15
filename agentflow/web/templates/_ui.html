@@ -1,0 +1,92 @@
+{# The small parts every page is made of. A macro sees only its arguments. #}
+
+{% macro pill(text, kind="wait", tip="") -%}
+<span class="pill {{ kind }}"{% if tip %} title="{{ tip }}"{% endif %}>{{ text }}</span>
+{%- endmacro %}
+
+{# A cost as show.cost() words it: the text, and why in the tooltip. #}
+{% macro cost(c) -%}
+<span title="{{ c.tip }}">{{ c.text }}</span>
+{%- endmacro %}
+
+{# A path on disk, with a button that copies it. `text` is a shorter way to show it. #}
+{% macro path(full, text="") -%}
+<span class="path"><code title="{{ full }}">{{ text or full }}</code><button type="button" class="copy" data-copy="{{ full }}" title="Copy the path">copy</button></span>
+{%- endmacro %}
+
+{# Tabs are pages of their own. `items` is a list of (key, label); the first one lives at `base` itself. #}
+{% macro tabs(base, items, current) -%}
+<nav class="tabs" aria-label="Sections">
+  {% for key, label in items %}<a href="{{ base }}{% if not loop.first %}/{{ key }}{% endif %}"{% if key == current %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+</nav>
+{%- endmacro %}
+
+{# A key/value table from catalog.row(): a value, a link or several, a note, and where the value comes from when the file does not say it. #}
+{% macro kv(rows) -%}
+<table class="kv">
+  {% for r in rows %}
+  <tr{% if r.mark %} class="dim"{% endif %}><th>{{ r.k }}</th><td>
+    {%- if r.links %}{% for l in r.links %}{% if l.href %}<a class="chip" href="{{ l.href }}">{{ l.text }}</a>{% else %}<code>{{ l.text }}</code>{% endif %} {% endfor %}
+    {%- elif r.href %}<a href="{{ r.href }}">{{ r.v }}</a>
+    {%- else %}{{ r.v or "—" }}{% endif %}
+    {%- if r.note %} <small>{{ r.note }}</small>{% endif %}
+    {%- if r.mark %} <span class="tag">{{ r.mark }}</span>{% endif -%}
+  </td></tr>
+  {% endfor %}
+</table>
+{%- endmacro %}
+
+{# What a check of the plugin's files found. #}
+{% macro check(errors) -%}
+{% if errors %}<span class="pill bad" title="{{ errors | join('; ') }}">{{ errors | length }} to fix</span>{% else %}<span class="pill done">ok</span>{% endif %}
+{%- endmacro %}
+
+{# The same for a row of a list: nothing when the files are fine. #}
+{% macro broken(errors) -%}
+{% if errors %} <span class="pill bad" title="{{ errors | join('; ') }}">{{ errors | length }} to fix</span>{% endif %}
+{%- endmacro %}
+
+{% macro errors(list) -%}
+{% if list %}<ul class="alert bad">{% for e in list %}<li>{{ e }}</li>{% endfor %}</ul>{% endif %}
+{%- endmacro %}
+
+{# A flow's schedule as catalog.schedule_cell() gives it. #}
+{% macro schedule(s) -%}
+{% if s.spec %}{{ s.spec }} {{ pill("on" if s.enabled else "off", "done" if s.enabled else "wait", ("next " ~ s.next_due) if s.next_due else "switched off: the flow starts only by hand") }}{% else %}<span title="no schedule: the flow starts only by hand">by hand</span>{% endif %}
+{%- endmacro %}
+
+{# A tool's health as catalog.health_cell() gives it: the state, with what the check said and when in the tooltip. #}
+{% macro health(h) -%}
+<span class="pill {{ h.pill }}" title="{{ h.detail }}{% if h.at %} · checked {{ h.at }}{% endif %}">{{ h.state }}</span>{% if h.old %} <small title="no server has checked it since">as of {{ h.at }}</small>{% endif %}
+{%- endmacro %}
+
+{# The secrets a plugin's scripts were granted, by name. #}
+{% macro secrets(list) -%}
+{% for s in list %}<code>{{ s.name }}</code> {{ pill("set" if s.set else "not set", "done" if s.set else "hold") }} {% else %}<span title="its scripts see no secret">none</span>{% endfor %}
+{%- endmacro %}
+
+{# How a run's items stand, as small counts. #}
+{% macro counts(list) -%}
+<span class="counts">{% for c in list %}<span class="{{ c.pill }}">{{ c.n }} {{ c.label }}</span>{% endfor %}</span>
+{%- endmacro %}
+
+{% macro runs_table(runs, with_flow=true) -%}
+<div class="scroll">
+  <table>
+    <thead><tr><th>Run</th>{% if with_flow %}<th>Flow</th>{% endif %}<th>Started</th><th>Status</th><th>Items</th><th class="r">Cost</th><th class="r">Duration</th><th>Output</th></tr></thead>
+    <tbody>
+    {% for r in runs %}
+      <tr>
+        <td class="name"><a href="/runs/{{ r.id }}">{{ r.id }}</a>{% if r.trial %} {{ pill("trial", "wait", "one item, to try the flow; it does not count as done") }}{% endif %}</td>
+        {% if with_flow %}<td><a href="/flows/{{ r.flow }}">{{ r.flow }}</a></td>{% endif %}
+        <td class="nw">{{ r.started }} <small>{{ r.by }}</small></td><td>{{ pill(r.status, r.pill) }}</td><td>{{ counts(r.counts) }}</td>
+        <td class="r">{{ cost(r.cost) }}</td><td class="r">{{ r.time }}</td>
+        <td>{% if r.report %}<a href="{{ r.report }}" target="_blank" rel="noopener">report</a>{% else %}<span title="the report is written when the run ends">—</span>{% endif %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="{{ 8 if with_flow else 7 }}" class="none">No runs yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{%- endmacro %}

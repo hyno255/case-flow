@@ -1,0 +1,1 @@
+{"service": "checkout-api", "repo": "git.example/shop/checkout-api", "commit": "0f3a9c1", "image": "registry.example/checkout-api:2026.11.2", "base_image": "registry.example/base-python:3.12-slim-20261020"}

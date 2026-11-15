@@ -1,0 +1,1 @@
+{"name": "billing-worker", "deps": [{"name": "acme-queue", "version": "2.4.0"}, {"name": "acme-log", "version": "1.8.0"}]}

@@ -1,0 +1,1 @@
+{"name": "search-indexer", "deps": [{"name": "acme-config", "version": "3.1.0", "deps": [{"name": "libexample-yaml", "version": "0.2.5"}]}]}

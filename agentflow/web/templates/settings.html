@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}Settings · agentflow{% endblock %}
+{% block heading %}Settings {{ ui.pill("read only", "wait", "edit agentflow.yaml and start the server again") }}{% endblock %}
+{% block actions %}{{ ui.path(v.file) }}{% endblock %}
+{% block main %}
+{{ ui.errors(v.errors) }}
+<section>
+  <h3>Models</h3>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Name</th><th>Provider</th><th>Model</th><th>API</th><th>Reasoning</th><th>Key variable</th></tr></thead>
+      <tbody>
+      {% for m in v.models %}
+        <tr><td class="name">{{ m.name }}{% if m.default %} {{ ui.pill("default", "run") }}{% endif %}</td><td>{{ m.provider }}</td><td><code>{{ m.model or "—" }}</code></td><td>{{ m.api }}</td><td>{{ m.reasoning }}</td>
+            <td><code>{{ m.key_env }}</code> {{ ui.pill("set" if m.key_set else "not set", "done" if m.key_set else "hold") }}</td></tr>
+      {% else %}
+        <tr><td colspan="6" class="none">No models.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+<div class="cards">
+  <section class="card">
+    <h2>Limits</h2>
+    {{ ui.kv(v.limits) }}
+  </section>
+  <section class="card">
+    <h2>Folders</h2>
+    <table class="kv">
+      <tr><th>plugins</th><td>{{ ui.path(v.plugins) }}</td></tr>
+      <tr><th>data</th><td>{{ ui.path(v.data) }}</td></tr>
+    </table>
+  </section>
+</div>
+<section>
+  <h3>Grants</h3>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Plugin</th><th>Secrets its scripts see</th></tr></thead>
+      <tbody>
+      {% for g in v.grants %}
+        <tr><td class="name">{% if g.href %}<a href="{{ g.href }}">{{ g.plugin }}</a>{% else %}{{ g.plugin }}{% endif %}</td>
+            <td>{{ ui.secrets(g.secrets) }}</td></tr>
+      {% else %}
+        <tr><td colspan="2" class="none">No grants.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

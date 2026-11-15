@@ -1,0 +1,17 @@
+source: security-tickets
+schedule: weekdays 07:00
+
+stages:
+  - id: gather
+    run: scripts/gather.sh
+
+  - id: analyse
+    agent: origin-analyst
+    check: scripts/chain-cites-files.py
+    done_when: The origin is stated, and every link in the chain cites a file in the work folder.
+
+  - id: fix
+    done_when: The fix names a version or an image tag that candidates.json lists as fixed.
+
+  - id: report
+    done_when: report.md covers origin, chain, fix and evidence, and agrees with the earlier stages.

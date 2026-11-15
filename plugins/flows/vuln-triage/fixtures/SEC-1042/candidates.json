@@ -1,0 +1,7 @@
+{"package": "libexample-xml", "fixed_in": "2.9.4",
+ "direct_dependency": {"name": "acme-http", "current": "4.2.0", "releases": [
+   {"version": "4.2.1", "brings": "libexample-xml 2.9.1", "fixed": false},
+   {"version": "4.3.1", "brings": "libexample-xml 2.9.4", "fixed": true},
+   {"version": "5.0.0", "brings": "libexample-xml 2.10.0", "fixed": true, "note": "major release"}]},
+ "package_versions": ["2.9.1", "2.9.4", "2.10.0"],
+ "base_image_tags": []}

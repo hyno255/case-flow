@@ -1,0 +1,87 @@
+{# One agent, tool or source. Tabs are pages of their own. #}
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% import "_files.html" as files %}
+{% set base = "/" ~ v.kind ~ "/" ~ v.name %}
+{% block title %}{{ v.name }} · {{ v.kind | capitalize }} · agentflow{% endblock %}
+{% block crumbs %}<a href="/{{ v.kind }}">{{ v.kind | capitalize }}</a>{% endblock %}
+{% block heading %}{{ v.name }} {{ ui.check(v.errors) }}{% endblock %}
+{% block tabs %}
+<nav class="tabs" aria-label="Sections">
+  {% for t in v.tabs %}<a href="{{ base }}{% if not loop.first %}/{{ t }}{% endif %}"{% if t == v.tab %} aria-current="page"{% endif %}>{{ t | capitalize }}</a>{% endfor %}
+</nav>
+{% endblock %}
+{% block main %}
+{{ ui.errors(v.errors) }}
+{% if v.tab == "config" %}
+<div class="cards">
+  <section class="card">
+    <h2>Config</h2>
+    {{ ui.kv(v.config) }}
+  </section>
+  {% if v.kind == "tools" %}
+  <section class="card">
+    <h2>Health <button type="button" data-post="/api/tools/{{ v.name }}/health" title="run this tool's health check now">Check now</button></h2>
+    <table class="kv">
+      <tr><th>state</th><td>{{ ui.health(v.health) }}</td></tr>
+      <tr><th>check said</th><td>{{ v.health.detail or "—" }}</td></tr>
+      <tr><th>checked</th><td>{% if v.health.at %}{{ v.health.at }}{% else %}<span title="checked when the server starts, every few minutes, and when asked">not yet</span>{% endif %}</td></tr>
+    </table>
+  </section>
+  {% endif %}
+  {% if v.kind == "sources" %}
+  <section class="card">
+    <h2>Accepted by</h2>
+    <table class="kv">
+      {% for a in v.accepted %}<tr><th><a href="/flows/{{ a.flow }}">{{ a.flow }}</a></th><td>{{ ui.schedule(a.schedule) }}{% if a.where %} <small>where {% for k, w in a.where.items() %}{{ k }} = {{ w if w is string else w | join(" or ") }}{% if not loop.last %}, {% endif %}{% endfor %}</small>{% else %} <small>every item</small>{% endif %}</td></tr>
+      {% else %}<tr><td class="none">No flow accepts this source, so it is never fetched.</td></tr>{% endfor %}
+    </table>
+  </section>
+  {% endif %}
+  {% if v.grants is defined %}
+  <section class="card">
+    <h2>Granted to its script</h2>
+    <table class="kv"><tr><th>secrets</th><td>{{ ui.secrets(v.grants) }}</td></tr></table>
+  </section>
+  {% endif %}
+  {% if v.kind != "sources" %}
+  <section class="card">
+    <h2>Used by</h2>
+    <table class="kv">
+      {% if v.kind == "agents" %}
+      {% for u in v.used %}<tr><th>{{ u.as }}</th><td><a href="/flows/{{ u.flow }}#stage-{{ u.stage }}">{{ u.flow }} · {{ u.stage }}</a></td></tr>
+      {% else %}<tr><td class="none">No flow names this agent.</td></tr>{% endfor %}
+      {% else %}
+      {% for u in v.used %}<tr><th><a href="/agents/{{ u.agent }}">{{ u.agent }}</a></th><td>{% for s in u.stages %}<a href="/flows/{{ s.flow }}#stage-{{ s.stage }}">{{ s.flow }} · {{ s.stage }}</a> <small>{{ s.as }}</small>{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}</td></tr>
+      {% else %}<tr><td class="none">No agent lists this tool.</td></tr>{% endfor %}
+      {% endif %}
+    </table>
+  </section>
+  {% endif %}
+</div>
+{% elif v.tab == "method" %}
+<section class="card">
+  <h2>Method {% if v.method_href %}<a href="{{ v.method_href }}">AGENT.md</a>{% endif %}</h2>
+  <div class="prose">{{ v.method_html | safe }}</div>
+</section>
+{% elif v.tab == "fetches" %}
+<div class="scroll">
+  <table>
+    <thead><tr><th>Fetched</th><th>For</th><th>Result</th><th class="r">Items</th><th class="r">Time</th><th>Runs</th><th>Folder</th></tr></thead>
+    <tbody>
+    {% for f in v.fetches %}
+      <tr><td class="nw">{{ f.at }}</td><td>{{ f.by }}</td>
+          <td>{{ ui.pill(f.outcome, "done" if f.outcome == "ok" else "run" if f.outcome == "running" else "bad") }}{% if f.detail %} <small>{{ f.detail }}</small>{% endif %}</td>
+          <td class="r">{{ f.count if f.count is not none else "—" }}</td><td class="r">{{ f.time or "—" }}</td>
+          <td>{% for r in f.runs %}<a href="/runs/{{ r.id }}" title="{{ r.flow }}">{{ r.id }}</a> {% else %}—{% endfor %}</td>
+          <td>{% if f.folder %}{{ ui.path(f.folder, f.folder.split("/")[-1]) }}{% else %}—{% endif %}</td></tr>
+    {% else %}
+      <tr><td colspan="7" class="none">Never fetched.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+{{ files.browser(v, base ~ "/files") }}
+{% endif %}
+{% endblock %}

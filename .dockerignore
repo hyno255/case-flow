@@ -1,0 +1,5 @@
+# only pyproject.toml and agentflow/ go into the image
+*
+!pyproject.toml
+!agentflow
+**/__pycache__

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}Runs · agentflow{% endblock %}
+{% block live %} data-events="/api/events?after={{ v.seq }}"{% endblock %}
+{% block heading %}Runs{% endblock %}
+{% block main %}
+{% for f in v.failed %}<p class="alert bad"><a href="{{ f.href }}">{{ f.name }}</a> could not start a run: {{ f.error }}</p>{% endfor %}
+{% if v.runs %}
+{{ ui.runs_table(v.runs) }}
+{% else %}
+<ol class="steps">
+  <li><b>A source</b> says how items are got and what it hands over.
+      {% for s in v.sources %}<a class="chip" href="/sources/{{ s }}">{{ s }}</a> {% else %}<a href="/sources">None yet</a>{% endfor %}</li>
+  <li><b>A flow</b> accepts a source and takes each item through its stages.
+      {% for f in v.flows %}<a class="chip" href="/flows/{{ f }}">{{ f }}</a> {% else %}<a href="/flows">None yet</a>{% endfor %}</li>
+  <li><b>A run</b> starts from the flow's page, with Run or its schedule, and ends with a report. No runs yet.</li>
+</ol>
+{% endif %}
+{% endblock %}

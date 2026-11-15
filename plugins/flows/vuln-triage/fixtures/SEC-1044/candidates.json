@@ -1,0 +1,6 @@
+{"package": "libexample-yaml", "fixed_in": "0.2.6",
+ "direct_dependency": {"name": "acme-config", "current": "3.1.0", "releases": [
+   {"version": "3.1.1", "brings": "libexample-yaml 0.2.5", "fixed": false},
+   {"version": "3.2.0", "brings": "libexample-yaml 0.2.5", "fixed": false}]},
+ "package_versions": ["0.2.4", "0.2.5"],
+ "base_image_tags": []}

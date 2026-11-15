@@ -1,0 +1,36 @@
+{# A folder as a tree on the left and one of its files on the right. Built by show.file_tree() and show.file_preview(). #}
+{% import "_ui.html" as ui %}
+
+{% macro tree(rows, base, selected) %}
+<ul>
+  {% for r in rows %}
+  {% if r.children is defined %}
+  <li><details data-id="dir:{{ r.path }}"{% if r.open %} open{% endif %}>
+    <summary>{{ r.name }}/{% if r.engine %} <span class="tag" title="written by the engine, not by the stages">engine</span>{% endif %}</summary>
+    {{ tree(r.children, base, selected) }}
+  </details></li>
+  {% else %}
+  <li><a href="{{ base }}?file={{ r.path | urlencode }}"{% if r.path == selected %} aria-current="true"{% endif %}>{{ r.name }}{% if r.engine %} <span class="tag" title="written by the engine, not by the stages">engine</span>{% endif %}<small>{{ r.size }}</small></a></li>
+  {% endif %}
+  {% endfor %}
+</ul>
+{% endmacro %}
+
+{# `v` holds folder, tree and file; `base` is the address of this Files tab. #}
+{% macro browser(v, base) %}
+{{ ui.path(v.folder) }}
+<div class="split files">
+  <nav class="tree-pane tree" aria-label="Files">
+    {% if v.tree %}{{ tree(v.tree, base, v.file.path if v.file else "") }}{% else %}<p class="none">No files.</p>{% endif %}
+  </nav>
+  <section class="preview">
+    {% if not v.file %}<p class="none">Select a file.</p>
+    {% elif v.file.error %}<p class="none">{{ v.file.path }}: {{ v.file.error }}</p>
+    {% else %}
+    <header>{{ ui.path(v.file.abs, v.file.path) }} <small>{{ v.file.size }}</small> <a href="{{ v.file.raw }}" target="_blank" rel="noopener">raw</a></header>
+    <pre class="code">{{ v.file.text }}</pre>
+    {% if v.file.cut %}<p class="none">Cut here. Open raw for more.</p>{% endif %}
+    {% endif %}
+  </section>
+</div>
+{% endmacro %}

@@ -1,0 +1,4 @@
+{"image": "registry.example/checkout-api:2026.11.2", "packages": [
+  {"name": "libexample-xml", "version": "2.9.1", "layer": "app (layer 7)"},
+  {"name": "zlib-example", "version": "1.3.2", "layer": "base (layer 1)"}
+]}

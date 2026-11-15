@@ -1,0 +1,1 @@
+{"name": "sample-service", "version": "1.0.0", "deps": [{"name": "http-kit", "version": "2.1.0", "deps": [{"name": "zlib-example", "version": "1.3.1"}]}]}

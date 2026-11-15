@@ -1,0 +1,49 @@
+{# The shell of every page: the pages on the left, then a bar (where you are, the title, what you can do), tabs, and the content.
+   With ?fragment=1 only the inside of #live-part is returned, which is what the live refresh swaps in. #}
+{% if not fragment %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}agentflow{% endblock %}</title>
+<link rel="stylesheet" href="{{ static('app.css') }}">
+</head>
+<body>
+<nav class="side" aria-label="Pages">
+  <a class="brand" href="/">agentflow</a>
+  <a href="/"{% if nav.section == "runs" %} aria-current="page"{% endif %}>Runs <span id="running" class="badge" title="running now"{% if not nav.running %} hidden{% endif %}>{{ nav.running }}</span></a>
+  <span class="group">Design</span>
+  {% for kind in ("flows", "agents", "tools", "sources") %}
+  <a href="/{{ kind }}"{% if nav.section == kind %} aria-current="page"{% endif %}>{{ kind | capitalize }}</a>
+  {% endfor %}
+  <span class="group">System</span>
+  <a href="/settings"{% if nav.section == "settings" %} aria-current="page"{% endif %}>Settings</a>
+  {% if nav.attention %}
+  <span class="group attn">Needs attention <span class="badge">{{ nav.attention | length }}</span></span>
+  {% for a in nav.attention[:6] %}<a class="attn" href="{{ a.href }}" title="{{ a.tip }}">{{ a.text }}</a>{% endfor %}
+  {% if nav.attention | length > 6 %}<span class="more">and {{ nav.attention | length - 6 }} more</span>{% endif %}
+  {% endif %}
+</nav>
+<div class="page">
+<div id="live-part"{% block live %}{% endblock %}>
+{% endif %}
+<header class="bar" data-running="{{ nav.running }}">
+  <div class="where">
+    <nav class="crumbs" aria-label="Where you are">{% block crumbs %}{% endblock %}</nav>
+    <h1>{% block heading %}{% endblock %}</h1>
+  </div>
+  <div class="acts">{% block actions %}{% endblock %}</div>
+</header>
+{% set head %}{% block head %}{% endblock %}{% endset %}
+{% if head | trim %}<div class="head">{{ head }}</div>{% endif %}
+{% block tabs %}{% endblock %}
+{% set body %}{% block main %}{% endblock %}{% endset %}
+{% if body | trim %}<main>{{ body }}</main>{% endif %}
+{% if not fragment %}
+</div>
+{% block fixed %}{% endblock %}
+</div>
+<script src="{{ static('app.js') }}"></script>
+</body>
+</html>
+{% endif %}

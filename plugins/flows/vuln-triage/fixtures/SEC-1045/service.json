@@ -1,0 +1,1 @@
+{"service": "notify-gateway", "repo": "git.example/notify/notify-gateway", "commit": "19d77ab", "image": "registry.example/notify-gateway:2026.9.3", "base_image": "registry.example/base-python:3.12-slim-20261110"}
