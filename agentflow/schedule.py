@@ -34,9 +34,12 @@ def next_due(spec: str, after: datetime) -> datetime:
     return day
 
 
-def _scheduled(settings) -> dict[str, tuple[str, str]]:
-    """flow -> (its schedule, its source), for every flow that has a schedule and passes its checks."""
+def register(settings, store, when: datetime | None = None) -> dict[str, tuple[str, str]]:
+    """Bring the stored schedules in line with the flow files, and return flow -> (its schedule, its source) for every flow
+    that has a schedule and passes its checks. A flow seen for the first time is switched off; a flow whose schedule was
+    edited gets its next slot from the new one; a flow that is gone is forgotten."""
     from .plugins import installed  # plugins.py checks schedules with parse_schedule, so it imports this module
+    when = when or datetime.now()
     live, found = installed(settings), {}
     for flow in live.names("flows"):
         try:
@@ -44,6 +47,14 @@ def _scheduled(settings) -> dict[str, tuple[str, str]]:
                 found[flow] = (str(live.flow(flow)["schedule"]), live.flow(flow)["source"])
         except Exception:  # a flow whose files cannot be read is not started; its page says why
             continue
+    for flow, (spec, _) in found.items():
+        row = store.one("SELECT * FROM schedules WHERE flow = ?", flow)
+        if row is None:
+            store.db.execute("INSERT INTO schedules (flow, spec, enabled, next_due) VALUES (?,?,0,?)", (flow, spec, next_due(spec, when).isoformat()))
+        elif row["spec"] != spec:
+            store.db.execute("UPDATE schedules SET spec = ?, next_due = ? WHERE flow = ?", (spec, next_due(spec, when).isoformat(), flow))
+    names = live.names("flows")
+    store.db.execute(f"DELETE FROM schedules WHERE flow NOT IN ({','.join('?' * len(names))})", names)
     return found
 
 
@@ -52,11 +63,8 @@ def tick(settings, store, when: datetime | None = None) -> list[tuple[str, str, 
     Flows that share a source and a slot are fetched for once; see runner.run_due."""
     when = when or datetime.now()
     due = []
-    for flow, (spec, source) in _scheduled(settings).items():
+    for flow, (spec, source) in register(settings, store, when).items():
         row = store.one("SELECT * FROM schedules WHERE flow = ?", flow)
-        if row is None:
-            store.db.execute("INSERT INTO schedules (flow, enabled, next_due) VALUES (?,0,?)", (flow, next_due(spec, when).isoformat()))
-            continue
         if row["enabled"] and datetime.fromisoformat(row["next_due"]) <= when:
             # one conditional update: only the tick that moves next_due forward gets to start the flow
             moved = store.db.execute("UPDATE schedules SET next_due = ? WHERE flow = ? AND next_due = ?",
@@ -67,10 +75,9 @@ def tick(settings, store, when: datetime | None = None) -> list[tuple[str, str, 
 
 
 def set_schedule(settings, store, flow: str, enabled: bool) -> str:
-    known = _scheduled(settings)
+    known = register(settings, store)
     if flow not in known:
         raise ValueError(f"flow '{flow}' has no schedule, or does not pass its checks")
     nxt = next_due(known[flow][0], datetime.now()).isoformat()
-    store.db.execute("INSERT INTO schedules (flow, enabled, next_due) VALUES (?,?,?) ON CONFLICT(flow) DO UPDATE SET enabled = ?, next_due = ?",
-                     (flow, int(enabled), nxt, int(enabled), nxt))
+    store.db.execute("UPDATE schedules SET enabled = ?, next_due = ? WHERE flow = ?", (int(enabled), nxt, flow))
     return nxt

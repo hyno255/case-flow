@@ -134,7 +134,7 @@ class EndToEnd(Home):
         self.assertIn("2 triaged, 2 need a person", index)
         self.assertEqual([e["type"] for e in self.store.events(run_id) if e["item"] is None], ["run_started", "report_rendered", "run_ended"])
         self.assertEqual((run["source"], self.store.one("SELECT COUNT(*) n FROM fetches WHERE id = ? AND outcome = 'ok'", run["fetch_id"])["n"]), ("security-tickets", 1))
-        # everything the run wrote is in its own folder; the data folder holds only the database and the runs
+        # everything the run wrote is in its own folder; the data folder holds only the database, the fetches and the runs
         self.assertEqual(sorted(p.name for p in self.store.path(run).iterdir()), ["items", "plugins", "report"])
         self.assertEqual(sorted(p.name for p in (self.store.path(run) / "items").iterdir()), ["SEC-1042", "SEC-1043", "SEC-1044", "SEC-1045"])
         self.assertEqual(sorted(p.name for p in self.settings.data.iterdir()), ["db", "fetches", "runs"])
@@ -195,14 +195,14 @@ class EndToEnd(Home):
             asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))
         self.assertEqual([f["outcome"] for f in self.store.q("SELECT * FROM fetches ORDER BY id")], ["ok", "failed", "failed"])
         self.assertEqual(Registry(self.settings.plugins).check_source("security-tickets"), [])
-        (source / "source.yaml").write_text("run: ./fetch.sh\nschedule: weekdays 07:00\n")
-        self.assertEqual(Registry(self.settings.plugins).check_source("security-tickets"), ["unknown key 'schedule'", "missing 'description'", "missing 'output'"])
+        (source / "source.yaml").write_text("run: ./fetch.sh\nsurprise: 1\n")
+        self.assertEqual(Registry(self.settings.plugins).check_source("security-tickets"), ["unknown key 'surprise'", "missing 'description'", "missing 'output'"])
 
     def test_a_trial_does_not_count_as_done(self):
         run_id = asyncio.run(try_flow(self.settings, self.store, "vuln-triage", "SEC-1043"))
         self.assertEqual(self.items(run_id)["SEC-1043"]["ended_as"], "done")
         self.assertRegex(self.store.one("SELECT folder FROM runs WHERE id = ?", run_id)["folder"], r"^runs/\d{4}-\d\d-\d\d-t_")
-        # a trial is not a triage: the scheduled run still does the item
+        # a trial is not a triage: the next run still does the item
         real = asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))
         self.assertEqual(self.items(real)["SEC-1043"]["ended_as"], "done")
 
@@ -352,9 +352,9 @@ class Scripts(Home):
             self.assertEqual(self.run_probe('test "$TRACKER_TOKEN" = granted-to-this-flow && test -z "$OPENAI_API_KEY$OTHER"')[0], 0)
             self.assertEqual(self.run_probe('test -z "$TRACKER_TOKEN" && test "$AGENTFLOW_TRIAL" = 1', trial=True)[0], 0)  # a trial withholds them
             self.assertEqual(self.run_probe('test "$AGENTFLOW_ITEM_ID" = SEC-1 && test -f "$AGENTFLOW_FLOW_DIR/flow.yaml" && test "$PWD" = "$(cd . && pwd)"')[0], 0)
-        self.settings.grants = {"flows/missing": {"secrets": []}, "tools/sbom-query": {"secrets": ["X"], "hosts": ["example.com"]}, "tools/deps-why": "x"}
+        self.settings.grants = {"flows/missing": {"secrets": []}, "tools/sbom-query": {"secrets": ["X"], "surprise": 1}, "tools/deps-why": "x"}
         self.assertEqual(self.settings.check(), ["grants: 'flows/missing' is not a source, tool or flow in the plugins folder",
-                                                 "grants: tools/sbom-query: unknown key 'hosts'", "grants: tools/deps-why: give 'secrets', a list of variable names"])
+                                                 "grants: tools/sbom-query: unknown key 'surprise'", "grants: tools/deps-why: give 'secrets', a list of variable names"])
 
     def test_the_exit_codes_and_the_stop(self):
         self.assertEqual(asyncio.run(run_proc([str(self.probe), "cat; echo ' seen' >&2; exit 78"], self.work, stdin='{"id": 1}')), (DONE_EARLY, '{"id": 1} seen'))

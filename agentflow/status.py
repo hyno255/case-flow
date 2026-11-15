@@ -23,9 +23,9 @@ def label(table: dict, name: str | None) -> str:
     return table[name][0] if name in table else (name or "").replace("_", " ")
 
 
-def is_stale(run, stale_after: float = STALE_AFTER) -> bool:
-    """True when a run has not ended and its process has given no sign of life for `stale_after` seconds."""
-    return run["ended"] is None and (run["beat"] is None or time.time() - run["beat"] > stale_after)
+def is_stale(run) -> bool:
+    """True when a run has not ended and its process has given no sign of life for STALE_AFTER seconds."""
+    return run["ended"] is None and (run["beat"] is None or time.time() - run["beat"] > STALE_AFTER)
 
 
 def run_status(run) -> tuple[str, str]:
@@ -46,10 +46,10 @@ def item_status(run, item) -> tuple[str, str]:
     return ("running", "run") if item["claimed_at"] else ("queued", "wait")
 
 
-def cost_text(u: dict, est: str = "", unknown: str = "unknown", none: str = "no model") -> str:
+def cost_text(u: dict, est: str = "", unknown: str = "unknown") -> str:
     """The cost of a usage total from Store.usage. Unknown is not zero: a try that was cut short used the model, but how much is not known."""
     if not u["has_model_calls"]:
-        return none
+        return "no model"
     if u["cost_known"]:
         return f"${u['cost_usd']:.4f}{est}" if u["cost_usd"] else "$0"  # nothing was charged, which is known, not estimated
     return f"${u['cost_usd']:.4f}{est} + unknown" if u["cost_usd"] else unknown

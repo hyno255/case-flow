@@ -9,27 +9,26 @@ from .layout import DB, EVENTS
 from .status import TRIAGED
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS schedules (flow TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, next_due TEXT);
+CREATE TABLE IF NOT EXISTS schedules (flow TEXT PRIMARY KEY, spec TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, next_due TEXT);
 CREATE TABLE IF NOT EXISTS fetches (
   id INTEGER PRIMARY KEY, source TEXT NOT NULL, scheduled_for TEXT NOT NULL, started TEXT, ended TEXT,
   outcome TEXT, item_count INTEGER, detail TEXT, folder TEXT, UNIQUE (source, scheduled_for));
-CREATE TABLE IF NOT EXISTS health (tool TEXT PRIMARY KEY, ok INTEGER NOT NULL, detail TEXT, checked TEXT, seconds REAL);
+CREATE TABLE IF NOT EXISTS health (tool TEXT PRIMARY KEY, ok INTEGER NOT NULL, detail TEXT, checked TEXT);
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, flow TEXT NOT NULL, source TEXT, fetch_id INTEGER, snapshot TEXT, trial INTEGER NOT NULL DEFAULT 0,
-  folder TEXT, started TEXT, ended TEXT, fetched INTEGER,
+  folder TEXT, started TEXT, ended TEXT,
   beat REAL, interrupted_at REAL, cancel_requested INTEGER NOT NULL DEFAULT 0, retry_of TEXT, retry_item TEXT, from_stage TEXT);
 CREATE TABLE IF NOT EXISTS items (
   id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, flow TEXT NOT NULL, item_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
-  folder TEXT, queued_at TEXT, claimed_at TEXT, ended_at TEXT, ended_as TEXT, reason TEXT, carried_from TEXT, payload TEXT,
+  folder TEXT, claimed_at TEXT, ended_at TEXT, ended_as TEXT, reason TEXT, carried_from TEXT, payload TEXT,
   UNIQUE (run_id, item_id));
 CREATE TABLE IF NOT EXISTS attempts (
   id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, item_id TEXT NOT NULL, stage TEXT NOT NULL, n INTEGER NOT NULL, by TEXT,
   started REAL, ended REAL, outcome TEXT, model_calls INTEGER DEFAULT 0, tool_calls INTEGER DEFAULT 0,
-  tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, cost_usd REAL, cost_status TEXT);
+  tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, cost_usd REAL);
 CREATE TABLE IF NOT EXISTS verdicts (
   id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, item_id TEXT NOT NULL, stage TEXT NOT NULL, n INTEGER NOT NULL, by TEXT,
-  passed INTEGER, reason TEXT, needs_person INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0,
-  cost_usd REAL, cost_status TEXT);
+  passed INTEGER, reason TEXT, tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, cost_usd REAL);
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, run_id TEXT, item_id TEXT, stage TEXT, type TEXT NOT NULL, data TEXT);
 CREATE INDEX IF NOT EXISTS events_run ON events (run_id, seq);
@@ -111,10 +110,10 @@ class Store:
             listener(event)
 
     # ---- runs and items ----
-    def add_run(self, run_id, flow, source, fetch_id, snapshot, trial, folder, fetched, retry_of=None, retry_item=None, from_stage=None) -> None:
-        self.db.execute("""INSERT INTO runs (id, flow, source, fetch_id, snapshot, trial, folder, started, fetched, beat, retry_of, retry_item, from_stage)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (run_id, flow, source, fetch_id, snapshot, int(trial), self._rel(folder), now(), fetched, time.time(), retry_of, retry_item, from_stage))
+    def add_run(self, run_id, flow, source, fetch_id, snapshot, trial, folder, retry_of=None, retry_item=None, from_stage=None) -> None:
+        self.db.execute("""INSERT INTO runs (id, flow, source, fetch_id, snapshot, trial, folder, started, beat, retry_of, retry_item, from_stage)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (run_id, flow, source, fetch_id, snapshot, int(trial), self._rel(folder), now(), time.time(), retry_of, retry_item, from_stage))
 
     def _rel(self, folder: Path) -> str:
         return str(Path(folder).resolve().relative_to(self.root))
@@ -146,12 +145,12 @@ class Store:
     def add_item(self, run_id, flow, item_id, fingerprint, folder, carried=None, payload: dict | None = None) -> None:
         body = json.dumps(payload) if payload is not None else None
         if carried is not None:
-            self.db.execute("""INSERT INTO items (run_id, flow, item_id, fingerprint, folder, queued_at, ended_at, ended_as, reason, carried_from, payload)
-                               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                            (run_id, flow, item_id, fingerprint, carried["folder"], now(), now(), "carried_over", carried["reason"], carried["run_id"], body))
+            self.db.execute("""INSERT INTO items (run_id, flow, item_id, fingerprint, folder, ended_at, ended_as, reason, carried_from, payload)
+                               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                            (run_id, flow, item_id, fingerprint, carried["folder"], now(), "carried_over", carried["reason"], carried["run_id"], body))
         else:
-            self.db.execute("INSERT INTO items (run_id, flow, item_id, fingerprint, folder, queued_at, payload) VALUES (?,?,?,?,?,?,?)",
-                            (run_id, flow, item_id, fingerprint, self._rel(folder), now(), body))
+            self.db.execute("INSERT INTO items (run_id, flow, item_id, fingerprint, folder, payload) VALUES (?,?,?,?,?,?)",
+                            (run_id, flow, item_id, fingerprint, self._rel(folder), body))
 
     def claim_item(self, run_id, item_id) -> bool:
         """One conditional update: whoever changes the row has the item."""
@@ -175,9 +174,9 @@ class Store:
     def end_attempt(self, attempt_id, outcome, stats: dict | None = None) -> None:
         s = stats or {}
         self.db.execute("""UPDATE attempts SET ended = ?, outcome = ?, model_calls = ?, tool_calls = ?, tokens_in = ?, tokens_out = ?,
-                           cost_usd = ?, cost_status = ? WHERE id = ? AND ended IS NULL""",
+                           cost_usd = ? WHERE id = ? AND ended IS NULL""",
                         (time.time(), outcome, s.get("model_calls", 0), s.get("tool_calls", 0), s.get("tokens_in", 0),
-                         s.get("tokens_out", 0), s.get("cost_usd"), s.get("cost_status"), attempt_id))
+                         s.get("tokens_out", 0), s.get("cost_usd"), attempt_id))
 
     def close_open_attempts(self, run_id, outcome, item_id=None) -> int:
         """Ends tries that never ended (and tries whose validation never finished) with the given outcome.
@@ -195,10 +194,8 @@ class Store:
         self.db.execute("UPDATE attempts SET outcome = ? WHERE id = ?", (outcome, attempt_id))
 
     def add_verdict(self, run_id, item_id, stage, n, v: dict) -> None:
-        self.db.execute("""INSERT INTO verdicts (run_id, item_id, stage, n, by, passed, reason, needs_person, tokens_in, tokens_out, cost_usd, cost_status)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (run_id, item_id, stage, n, v["by"], int(v["passed"]), v.get("reason", ""), int(v.get("needs_person", False)),
-                         v.get("tokens_in", 0), v.get("tokens_out", 0), v.get("cost_usd"), v.get("cost_status")))
+        self.db.execute("INSERT INTO verdicts (run_id, item_id, stage, n, by, passed, reason, tokens_in, tokens_out, cost_usd) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (run_id, item_id, stage, n, v["by"], int(v["passed"]), v.get("reason", ""), v.get("tokens_in", 0), v.get("tokens_out", 0), v.get("cost_usd")))
 
     # ---- totals: unknown is not zero ----
     def usage(self, run_id, item_id=None, stage=None) -> dict:

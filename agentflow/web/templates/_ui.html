@@ -14,10 +14,10 @@
 <span class="path"><code title="{{ full }}">{{ text or full }}</code><button type="button" class="copy" data-copy="{{ full }}" title="Copy the path">copy</button></span>
 {%- endmacro %}
 
-{# Tabs are pages of their own. `items` is a list of (key, label); the first one lives at `base` itself. #}
-{% macro tabs(base, items, current) -%}
+{# Tabs are pages of their own. `keys` are the tabs' names; the first one lives at `base` itself. #}
+{% macro tabs(base, keys, current) -%}
 <nav class="tabs" aria-label="Sections">
-  {% for key, label in items %}<a href="{{ base }}{% if not loop.first %}/{{ key }}{% endif %}"{% if key == current %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+  {% for key in keys %}<a href="{{ base }}{% if not loop.first %}/{{ key }}{% endif %}"{% if key == current %} aria-current="page"{% endif %}>{{ key | capitalize }}</a>{% endfor %}
 </nav>
 {%- endmacro %}
 
@@ -57,7 +57,7 @@
 
 {# A tool's health as catalog.health_cell() gives it: the state, with what the check said and when in the tooltip. #}
 {% macro health(h) -%}
-<span class="pill {{ h.pill }}" title="{{ h.detail }}{% if h.at %} · checked {{ h.at }}{% endif %}">{{ h.state }}</span>{% if h.old %} <small title="no server has checked it since">as of {{ h.at }}</small>{% endif %}
+<span class="pill {{ h.pill }}" title="{% if h.at %}{{ h.detail }} · checked {{ h.at }}{% else %}checked when the server starts, every five minutes, and when asked{% endif %}">{{ h.state }}</span>{% if h.old %} <small title="no server has checked it since">as of {{ h.at }}</small>{% endif %}
 {%- endmacro %}
 
 {# The secrets a plugin's scripts were granted, by name. #}

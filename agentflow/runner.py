@@ -64,14 +64,16 @@ def fingerprint(item: dict) -> str:
 
 # ---------- one run: create, work, finish ----------
 
-def create_run(settings, store, live: Registry, flow: str, *, source, fetch_id, trial, fetched, **retry) -> tuple[str, Path]:
+def create_run(settings, store, live: Registry, flow: str, *, source, fetch_id, trial, **retry) -> tuple[str, Path]:
     for spec in live.models_used(flow):
         build_model(settings, spec)  # stop before any work if a model this flow uses is not usable
-    run_id = ("t_" if trial else "r_") + uuid.uuid4().hex[:4]
+    run_id = None
+    while run_id is None or store.run(run_id):  # short ids are easy to read and say; one that is taken is drawn again
+        run_id = ("t_" if trial else "r_") + uuid.uuid4().hex[:4]
     folder = new_run_folder(settings.data, run_id)  # everything this run writes goes in here
     (folder / ITEMS).mkdir(parents=True)
     digest = live.snapshot(flow, folder / PLUGINS)
-    store.add_run(run_id, flow, source, fetch_id, digest, trial, folder, fetched, **retry)
+    store.add_run(run_id, flow, source, fetch_id, digest, trial, folder, **retry)
     return run_id, folder
 
 
@@ -106,27 +108,26 @@ async def execute(settings, store, run_id: str, todo: list[tuple[dict, Path, str
 
     try:
         await asyncio.gather(*(one(*t) for t in todo))
-        await asyncio.to_thread(finish, store, run_id)  # rendering must not hold up other runs
+        finish(store, run_id)  # on the loop's own thread: the store's one connection is never used by two threads
     finally:
         alive.cancel()
     return run_id
 
 
 def finish(store, run_id: str) -> None:
-    """Render the report into the run folder and end the run. The report is the run's output; nothing is sent anywhere."""
+    """Render the report into the run folder and end the run. The report is the run's output."""
     index, counts = render_run(store, run_id)
     store.emit(run_id, None, None, "report_rendered", path=str(index), **counts)
     store.end_run(run_id)
     store.emit(run_id, None, None, "run_ended")
 
 
-async def run_flow(settings, store, live: Registry, flow: str, fetched: list[dict], *, source: str, fetch_id=None,
-                   trial: bool = False, force: bool = False, fetch_seconds: float | None = None) -> str:
+async def run_flow(settings, store, live: Registry, flow: str, fetched: list[dict], *, source: str, fetch_id: int, fetch_seconds: float,
+                   trial: bool = False, force: bool = False) -> str:
     """One run of one flow over the items of a fetch that the flow accepts. Returns the run id."""
     items = [i for i in fetched if accepts(live.flow(flow).get("where"), i)]
-    run_id, folder = create_run(settings, store, live, flow, source=source, fetch_id=fetch_id, trial=trial, fetched=len(items))
-    store.emit(run_id, None, None, "run_started", flow=flow, trial=trial, items=len(items), source=source, fetched=len(fetched),
-               **({"fetch_seconds": fetch_seconds} if fetch_seconds is not None else {}))
+    run_id, folder = create_run(settings, store, live, flow, source=source, fetch_id=fetch_id, trial=trial)
+    store.emit(run_id, None, None, "run_started", flow=flow, trial=trial, items=len(items), source=source, fetch_seconds=fetch_seconds)
     todo = []
     for item in items:
         fp = fingerprint(item)
@@ -153,8 +154,9 @@ async def fetch_once(settings, store, live: Registry, source: str, slot: str | N
     began = time.time()
     try:
         items = await fetch(settings, live, source, out)
-    except FetchFailed as e:
-        store.db.execute("UPDATE fetches SET ended = ?, outcome = 'failed', detail = ? WHERE id = ?", (now(), str(e), cur.lastrowid))
+    except BaseException as e:  # also a fetch cut short by a stop: its row must not stay open
+        why = str(e) if isinstance(e, FetchFailed) else f"interrupted: {type(e).__name__}"
+        store.db.execute("UPDATE fetches SET ended = ?, outcome = 'failed', detail = ? WHERE id = ?", (now(), why, cur.lastrowid))
         raise
     store.db.execute("UPDATE fetches SET ended = ?, outcome = 'ok', item_count = ? WHERE id = ?", (now(), len(items), cur.lastrowid))
     return cur.lastrowid, items, round(time.time() - began, 3)
@@ -177,16 +179,17 @@ async def start_flow(settings, store, flow: str, *, force: bool = False) -> str:
     return await run_flow(settings, store, live, flow, items, source=source, fetch_id=fetch_id, force=force, fetch_seconds=took)
 
 
-async def run_due(settings, store, source: str, flows: list[str], slot: str) -> list[str]:
+async def run_due(settings, store, source: str, flows: list[str], slot: str) -> list:
     """The schedules of these flows came due in the same slot and they accept the same source: fetch it once and
-    start one run per flow. A slot that was already fetched is not fetched again."""
+    start one run per flow. A slot that was already fetched is not fetched again. Returns, in the order of `flows`,
+    each flow's run id, or the exception that kept that flow from starting; the others run all the same."""
     live = installed(settings)
     got = await fetch_once(settings, store, live, source, slot)
     if got is None:
         return []
     fetch_id, items, took = got
     return list(await asyncio.gather(*(run_flow(settings, store, live, flow, items, source=source, fetch_id=fetch_id, fetch_seconds=took)
-                                       for flow in flows)))
+                                       for flow in flows), return_exceptions=True))
 
 
 async def try_flow(settings, store, flow: str, item_id: str | None = None) -> str:

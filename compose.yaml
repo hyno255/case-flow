@@ -15,5 +15,5 @@ services:
     volumes:
       - ./agentflow.yaml:/work/agentflow.yaml:ro
       - ./plugins:/work/plugins:ro      # flows, agents, tools (scripts and MCP servers), sources
-      - ./data:/work/data               # runs, reports and the database
+      - ./data:/work/data               # the database, fetches, runs and their reports
       # - ~/code/product:/mnt/product:ro   # any other folder your scripts read

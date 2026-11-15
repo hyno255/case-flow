@@ -202,8 +202,6 @@ async def run_agent(settings, instructions: str, prompt: str, tools: list, outpu
     return result.output, {
         "model_calls": usage.requests, "tool_calls": tool_calls,
         "tokens_in": usage.input_tokens, "tokens_out": usage.output_tokens,
-        "cost_usd": cost,
-        # Priced from Pydantic AI's price table. A gateway that reports its own cost would be 'reported'.
-        "cost_status": "free" if free else "estimated" if cost is not None else "unknown",  # unknown is not zero
+        "cost_usd": cost,  # from Pydantic AI's price table; None when the model has no price there, which is not zero
         "seconds": round(time.time() - started, 2),
     }

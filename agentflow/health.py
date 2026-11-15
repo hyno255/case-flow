@@ -2,7 +2,6 @@
 when it starts and lists its tools. The server checks every tool when it starts and every few minutes, and a person can
 ask for a check; the last answer is kept in the store, so every page can show it without running anything."""
 import asyncio
-import time
 
 from .agents import plugin_tool
 from .plugins import installed
@@ -39,11 +38,9 @@ async def check_tools(settings, store, only: str | None = None) -> list[dict]:
     names = [n for n in live.names("tools") if only in (None, n)]
 
     async def one(name: str) -> dict:
-        began = time.time()
         ok, detail = await tool_health(settings, live, name)
-        row = {"tool": name, "ok": ok, "detail": detail, "checked": now(), "seconds": round(time.time() - began, 2)}
-        store.db.execute("INSERT OR REPLACE INTO health (tool, ok, detail, checked, seconds) VALUES (?,?,?,?,?)",
-                         (name, int(ok), detail, row["checked"], row["seconds"]))
+        row = {"tool": name, "ok": ok, "detail": detail, "checked": now()}
+        store.db.execute("INSERT OR REPLACE INTO health (tool, ok, detail, checked) VALUES (?,?,?,?)", (name, int(ok), detail, row["checked"]))
         return row
 
     rows = list(await asyncio.gather(*(one(n) for n in names)))

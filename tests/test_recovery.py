@@ -125,7 +125,7 @@ class Recovery(Home):
             run_id = self.store.one("SELECT id FROM runs")["id"]
             with self.assertRaisesRegex(ValueError, "still running"):  # a live run cannot be taken over
                 claim_resume(self.store, run_id)
-            self.assertEqual(request_cancel(self.settings, self.store, run_id), "asked")
+            self.assertEqual(request_cancel(self.store, run_id), "asked")
             self.assertEqual(run_status(self.store.one("SELECT * FROM runs"))[0], "stopping")
             await task  # the hold is still in place: the gate scripts are stopped, not waited for
             return run_id
@@ -144,7 +144,7 @@ class Recovery(Home):
         self.assertEqual(run_status(self.store.one("SELECT * FROM runs"))[0], "cancelled")
         self.assertTrue((self.store.path(self.items(run_id)["SEC-1042"]) / "origin.md").is_file())  # folders are kept
         with self.assertRaisesRegex(ValueError, "already finished"):
-            request_cancel(self.settings, self.store, run_id)
+            request_cancel(self.store, run_id)
 
         # a run whose process is gone can be closed without resuming it
         self.hold.write_text("")
@@ -162,7 +162,7 @@ class Recovery(Home):
         asyncio.run(dies())
         self.assert_scripts_gone(within=0)  # a task that is cancelled takes its scripts with it
         dead = self.store.one("SELECT * FROM runs WHERE ended IS NULL")
-        self.assertEqual(request_cancel(self.settings, self.store, dead["id"], stale_after=0), "closed")
+        self.assertEqual(request_cancel(self.store, dead["id"], stale_after=0), "closed")
         self.assertEqual({v["ended_as"] for k, v in self.items(dead["id"]).items() if k != "SEC-1045"}, {"cancelled"})
         self.assertIsNotNone(self.store.one("SELECT ended FROM runs WHERE id = ?", dead["id"])["ended"])
 
@@ -257,7 +257,7 @@ class Recovery(Home):
         self.assertTrue((self.store.path(run) / "report/index.html").is_file())
         self.assertEqual(self.items(run_id)["SEC-1044"]["ended_as"], "needs_person")  # the old run is not changed
 
-        # the next scheduled run carries the retried result over
+        # the next run carries the retried result over
         later = asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))
         self.assertEqual(self.items(later)["SEC-1042"]["carried_from"], new)
 

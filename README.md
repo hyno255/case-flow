@@ -2,7 +2,7 @@
 
 A small engine that takes items from a source (tickets, alerts, findings) through a flow of stages, where each stage is done
 by a script or an agent and then checked. It orchestrates and routes; everything specific lives in plugin folders.
-Every run is traceable step by step and ends with a report.
+Every run can be traced down to each model call and ends with a report.
 
 The engine runs in one Docker image. Nothing of yours is inside it: settings, plugins, data and any other folder are attached when it starts.
 
@@ -87,7 +87,7 @@ A fetch that does not write the file, or whose items lack a listed field, fails,
 A flow says which source it accepts, optionally which of its items, and when.
 
 ```yaml
-# plugins/flows/vuln-triage/flow.yaml
+# a flow.yaml
 source: security-tickets
 schedule: weekdays 07:00         # when the engine fetches the source for this flow; without it the flow starts by hand
 where: {severity: [high, medium]}  # optional: only the items that match
@@ -120,7 +120,7 @@ mcp: [python3, ./server.py]
 ```
 
 The server checks every tool when it starts, every five minutes and on request. The Tools page shows the result,
-and a failing tool is named in the sidebar and on every flow whose agents use it.
+and a failing tool is named on every flow whose agents use it.
 
 ## Where things are
 

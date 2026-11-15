@@ -455,7 +455,7 @@ grants: {}                      <span class="c"># e.g. sources/security-tickets:
 
 <section id="interfaces">
   <h2>Pages, API and CLI</h2>
-  <p>FastAPI renders the pages on the server from Jinja2 templates. A page of a run that is still going follows one server-sent event stream and asks for its changed part again. The sidebar reads Runs, then Design: Flows, Agents, Tools, Sources, then System: Settings. Under them, on every page, is <b>Needs attention</b>: plugin files to fix, a flow that could not start, a failing tool, an interrupted run, and items of a flow's latest run that need a person.</p>
+  <p>FastAPI renders the pages on the server from Jinja2 templates. A page of a run that is still going follows one server-sent event stream and asks for its changed part again. The sidebar reads Runs, then Design: Flows, Agents, Tools, Sources, then System: Settings.</p>
   <div class="scroll"><table class="wrap wide">
     <thead><tr><th>Page</th><th>Tabs</th><th>Shows</th></tr></thead><tbody>
     <tr><td class="name">Runs <small><code>/</code></small></td><td></td><td>One row per run: flow, start and what started it, status, items, cost, duration, and the link to its report. Nothing starts here. With no run yet: the three steps from a source to a run.</td></tr>

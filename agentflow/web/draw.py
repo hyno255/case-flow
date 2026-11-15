@@ -6,6 +6,7 @@ a fail edge a dashed one: a loop at the right of the stage when it tries again i
 `on_fail` names an earlier stage. A pass edge that skips stages arcs down the left side.
 """
 from ..graph import END, compile_flow, stage_by, stage_tries, validated
+from .show import where_text
 
 W, GAP, X0, LINE = 230, 34, 10, 15   # box width, space between boxes, margin, height of a line of text
 SKIP, LOOP, BACK, NOTE = 40, 34, 56, 92  # how far a skipping arc, a loop and the shortest back arc swing out; room for a label beside an arc
@@ -44,9 +45,8 @@ def graph(flow: dict, source: dict | None = None, stats: dict | None = None, bas
         return n
 
     src = flow.get("source") or ""
-    where = flow.get("where") if isinstance(flow.get("where"), dict) else {}
-    taken = "where " + ", ".join(f"{k} = {' or '.join(map(str, v)) if isinstance(v, list) else v}" for k, v in where.items()) if where else ""
-    node(":source", "source", src or "no source", [str(flow.get("schedule") or "started by hand"), (source or {}).get("output"), taken],
+    taken = where_text(flow.get("where"))
+    node(":source", "source", src or "no source", [str(flow.get("schedule") or "started by hand"), (source or {}).get("output"), f"where {taken}" if taken else ""],
          f"/sources/{src}" if src else "")  # ":" keeps it apart from stage ids
     for i, (sid, s) in enumerate(g.stages.items(), 1):
         checks = " + ".join(filter(None, ["check" if "check" in s else "", "review" if "review" in s or "done_when" in s else ""]))

@@ -24,7 +24,7 @@
   <div class="wide"><dt>Work folder</dt><dd>{{ ui.path(v.folder) }}</dd></div>
 </dl>
 {% endblock %}
-{% block tabs %}{{ ui.tabs(base, [("output", "Output"), ("trace", "Trace"), ("files", "Files"), ("log", "Log")], v.tab) }}{% endblock %}
+{% block tabs %}{{ ui.tabs(base, ["output", "trace", "files", "log"], v.tab) }}{% endblock %}
 {% block main %}
 {% if v.tab == "output" %}
 {% if v.reason and v.ended_as != "done" %}<p class="alert">{{ v.reason }}</p>{% endif %}

@@ -104,14 +104,13 @@ def schedule_cell(store, flow: str, f: dict) -> dict:
     return {"spec": str(f.get("schedule") or ""), "enabled": on, "next_due": show.when(sched["next_due"]) if on else ""}
 
 
-def flow_rows(settings, store, errors: dict | None = None) -> list[dict]:
+def flow_rows(settings, store, errors: dict) -> list[dict]:
     live, rows = installed(settings), []
     for n in live.names("flows"):
         f = _load(live.flow, n, default={})
         last = store.one("SELECT * FROM runs WHERE flow = ? ORDER BY started DESC, rowid DESC LIMIT 1", n)
         rows.append({"name": n, "source": str(f.get("source") or ""), "schedule": schedule_cell(store, n, f), "stages": len(f.get(STAGES) or []),
-                     "model": model_cell(settings, f.get("model")), "model_default": "model" not in f,
-                     "errors": _safe(live.check_flow, n), "error": (errors or {}).get(f"flows/{n}", ""),
+                     "errors": _safe(live.check_flow, n), "error": errors.get(f"flows/{n}", ""),
                      "last_run": views.run_row(store, last) if last else None})
     return rows
 
@@ -123,7 +122,7 @@ def agent_rows(settings) -> list[dict]:
     for n in live.names("agents"):
         meta = _load(live.agent, n, default=({}, ""))[0]
         rows.append({"name": n, "description": meta.get("description", ""), "model": model_cell(settings, meta.get("model")), "model_default": "model" not in meta,
-                     "tools": meta.get("tools") or [], "used": used.get(n, []), "errors": _safe(live.check_agent, n)})
+                     "used": used.get(n, []), "errors": _safe(live.check_agent, n)})
     return rows
 
 
@@ -131,7 +130,7 @@ def health_cell(store, name: str) -> dict:
     """The last answer of a tool's health check: {state: ok | failing | not checked, detail, at}."""
     h = store.one("SELECT * FROM health WHERE tool = ?", name)
     if h is None:
-        return {"state": "not checked", "pill": "wait", "detail": "checked when the server starts, every few minutes, and when asked", "at": ""}
+        return {"state": "not checked", "pill": "wait", "detail": "", "at": "", "old": False}
     old = show.seconds_between(h["checked"], None) > STALE
     return {"state": "ok" if h["ok"] else "failing", "pill": "done" if h["ok"] else "bad", "detail": h["detail"] or "",
             "at": show.when(h["checked"]), "old": old}
@@ -143,7 +142,7 @@ def tool_rows(settings, store) -> list[dict]:
     rows = []
     for n in live.names("tools"):
         t = _load(live.tool, n, default={})
-        rows.append({"name": n, "description": t.get("description", ""), "how": "MCP server" if "mcp" in t else "script", "args": t.get("args") or [],
+        rows.append({"name": n, "description": t.get("description", ""), "how": "MCP server" if "mcp" in t else "script",
                      "used": used.get(n, []), "errors": _safe(live.check_tool, n), "health": health_cell(store, n)})
     return rows
 
@@ -153,7 +152,7 @@ def last_fetch(store, source: str) -> dict | None:
     return {"at": show.when(last["started"]), "outcome": last["outcome"] or "running", "detail": last["detail"] or "", "count": last["item_count"]} if last else None
 
 
-def source_row(settings, store, live, name: str) -> dict:
+def source_row(store, live, name: str) -> dict:
     s = _load(live.source, name, default={})
     return {"name": name, "description": str(s.get("description") or ""), "output": str(s.get("output") or ""),
             "flows": _load(live.flows_for_source, name, default=[]), "errors": _safe(live.check_source, name), "last_fetch": last_fetch(store, name)}
@@ -161,12 +160,12 @@ def source_row(settings, store, live, name: str) -> dict:
 
 def source_rows(settings, store) -> list[dict]:
     live = installed(settings)
-    return [source_row(settings, store, live, n) for n in live.names("sources")]
+    return [source_row(store, live, n) for n in live.names("sources")]
 
 
 def plugins_view(settings, store, errors: dict) -> dict:
     """Everything installed, for the API."""
-    return {"flows": flow_rows(settings, store), "agents": agent_rows(settings), "tools": tool_rows(settings, store), "sources": source_rows(settings, store),
+    return {"flows": flow_rows(settings, store, errors), "agents": agent_rows(settings), "tools": tool_rows(settings, store), "sources": source_rows(settings, store),
             "folder": str(settings.plugins)}
 
 
@@ -255,14 +254,14 @@ def flow_design(settings, store, live, name: str, f: dict) -> dict:
             "yaml_href": file_link("flows", name, folder, "flow.yaml")}
 
 
-def flow_view(settings, store, name: str, tab: str = "design", file: str = "", errors: dict | None = None) -> dict | None:
+def flow_view(settings, store, name: str, tab: str, file: str, errors: dict) -> dict | None:
     live = installed(settings)
     if not (live.dir("flows", name) / "flow.yaml").is_file() or tab not in TABS["flows"]:
         return None
     f = _load(live.flow, name, default={})
     v = {"kind": "flows", "name": name, "tab": tab, "tabs": TABS["flows"], "errors": _safe(live.check_flow, name), "folder": str(live.dir("flows", name)),
          "source": str(f.get("source") or "") if f.get("source") in live.names("sources") else "",
-         "error": (errors or {}).get(f"flows/{name}", ""), "seq": views.max_seq(store), "schedule": schedule_cell(store, name, f)}
+         "error": errors.get(f"flows/{name}", ""), "seq": views.max_seq(store), "schedule": schedule_cell(store, name, f)}
     v["can_run"] = bool(v["source"]) and not v["errors"]
     if tab == "design":
         v.update(flow_design(settings, store, live, name, f))
@@ -326,14 +325,14 @@ def source_view(settings, store, name: str, tab: str = "config", file: str = "")
     if not (folder / "source.yaml").is_file() or tab not in TABS["sources"]:
         return None
     s = _load(live.source, name, default={})
-    v = {"kind": "sources", "tab": tab, "tabs": TABS["sources"], "folder": str(folder), **source_row(settings, store, live, name)}
+    v = {"kind": "sources", "tab": tab, "tabs": TABS["sources"], "folder": str(folder), **source_row(store, live, name)}
     if tab == "config":
         v["config"] = [row("description", s.get("description", "")), row("run", s.get("run", ""), file_link("sources", name, folder, s.get("run", ""))),
                        row("output", s.get("output", ""), note="a JSON list, written into each fetch's own folder"),
                        row("fields", links=links(s.get("fields") if isinstance(s.get("fields"), list) else [], "")),
                        *[row(k, val) for k, val in s.items() if k not in ("description", "run", "output", "fields")]]
-        v["accepted"] = [{"flow": f, "where": _load(live.flow, f, default={}).get("where") or {}, "schedule": schedule_cell(store, f, _load(live.flow, f, default={}))}
-                         for f in v["flows"]]
+        accepting = {f: _load(live.flow, f, default={}) for f in v["flows"]}
+        v["accepted"] = [{"flow": f, "where": show.where_text(spec.get("where")), "schedule": schedule_cell(store, f, spec)} for f, spec in accepting.items()]
         v["grants"] = grants_view(settings, f"sources/{name}")
     elif tab == "fetches":
         v["fetches"] = [{"at": show.when(f["started"]), "by": show.fetch_by(f["scheduled_for"]),

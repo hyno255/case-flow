@@ -45,7 +45,7 @@ class Ctx:
 
     def env(self, plugin: str) -> dict:
         """What a script is told: where the flow's files are, which item, whether this is a trial,
-        and only the secrets it was granted. Trials withhold granted secrets, so a script cannot write outward."""
+        and only the secrets it was granted. A trial withholds granted secrets."""
         env = {"AGENTFLOW_FLOW_DIR": str(self.flow_dir.resolve()), "AGENTFLOW_ITEM_ID": self.item_id}
         if self.trial:
             env["AGENTFLOW_TRIAL"] = "1"
@@ -238,8 +238,6 @@ async def run_stage(ctx: Ctx, stage: dict) -> tuple[str, str]:
 async def run_item(ctx: Ctx, start_at: str | None = None) -> tuple[str, str]:
     """One item along the flow's graph, from `start_at` if given (a resume or a retry), else from the first stage.
     Returns (ending, reason); the ending is one of ENDINGS."""
-    for sub in (ATTEMPTS, VERDICTS):
-        (ctx.work / sub).mkdir(parents=True, exist_ok=True)
     if start_at is None:
         ctx.emit(None, "item_started")
     else:

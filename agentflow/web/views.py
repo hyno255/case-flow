@@ -8,9 +8,10 @@ import os
 from collections import Counter
 
 from .. import trace as tracing
-from ..graph import END, stage_by
+from ..graph import stage_by
 from ..layout import ENGINE_OWNED, REPORT
 from ..plugins import installed, run_plugins
+from ..recovery import retry_stage
 from ..render import md_to_html
 from ..status import ENDINGS, item_status, label, run_status
 from . import draw, show
@@ -25,38 +26,10 @@ def max_seq(store) -> int:
     return store.one("SELECT COALESCE(MAX(seq), 0) n FROM events")["n"]
 
 
-def nav(settings, store, section: str, errors: dict | None = None) -> dict:
+def nav(settings, store, section: str) -> dict:
     """What the sidebar shows on every page."""
     running = sum(run_status(r)[0] in WORKING for r in store.q("SELECT * FROM runs WHERE ended IS NULL"))
-    return {"section": section, "running": running, "attention": attention(settings, store, errors or {})}
-
-
-def attention(settings, store, errors: dict) -> list[dict]:
-    """Everything that waits for a person, wherever it is: {text, tip, href}. Empty when nothing does."""
-    found = [{"text": "settings", "tip": e, "href": "/settings"} for e in settings.check()]
-    for kind, name, errs, _ in _checked(settings):
-        if errs:
-            found.append({"text": f"{kind[:-1]} {name}: {len(errs)} to fix", "tip": "; ".join(errs), "href": f"/{kind}/{name}"})
-    for key, text in errors.items():
-        if key.startswith("flows/"):
-            found.append({"text": f"{key[6:]} could not start", "tip": text, "href": "/" + key})
-    for h in store.q("SELECT * FROM health WHERE ok = 0 ORDER BY tool"):
-        found.append({"text": f"tool {h['tool']} is failing", "tip": h["detail"] or "", "href": f"/tools/{h['tool']}"})
-    for run in store.q("SELECT * FROM runs WHERE ended IS NULL ORDER BY started DESC"):
-        if run_status(run)[0] == "interrupted":
-            found.append({"text": f"{run['id']} is interrupted", "tip": "its process stopped: resume or cancel it", "href": f"/runs/{run['id']}"})
-    for run in store.q("SELECT * FROM runs r WHERE trial = 0 AND ended IS NOT NULL AND started = (SELECT MAX(started) FROM runs WHERE flow = r.flow AND trial = 0)"):
-        n = store.one("SELECT COUNT(*) n FROM items WHERE run_id = ? AND ended_as = 'needs_person'", run["id"])["n"]
-        if n:
-            found.append({"text": f"{n} of {run['flow']} need a person", "tip": f"in its latest run, {run['id']}", "href": f"/runs/{run['id']}"})
-    return found
-
-
-def _checked(settings) -> list:
-    try:
-        return installed(settings).check_all()
-    except Exception as e:  # a plugin file that cannot be parsed at all
-        return [("flows", "", [f"{type(e).__name__}: {e}"], "")]
+    return {"section": section, "running": running}
 
 
 def flow_of(store, run) -> dict:
@@ -114,12 +87,12 @@ def runs_view(settings, store, errors: dict) -> dict:
 
 # ---------- one run ----------
 
-def item_row(settings, store, run, it) -> dict:
+def item_row(store, run, it) -> dict:
     last, _ = store.last_try(run["id"], it["item_id"])
     u = store.usage(run["id"], it["item_id"])
     status, pill = item_status(run, it)
     spent = show.cost(u) if not it["carried_from"] else {"text": show.DASH, "tip": "carried over: nothing was spent in this run"}
-    return {"id": it["item_id"], "title": show.item_title(json.loads(it["payload"] or "{}")), "status": status, "pill": pill, "ended_as": it["ended_as"],
+    return {"id": it["item_id"], "title": show.item_title(json.loads(it["payload"] or "{}")), "status": status, "pill": pill,
             "stage": (last["stage"] + (f" · try {last['n']}" if last["n"] > 1 else "")) if last else "", "reason": it["reason"] or "",
             "carried_from": it["carried_from"], "tokens": u["tokens"], "cost": spent,
             "time": show.duration(show.seconds_between(it["claimed_at"], it["ended_at"])) if it["claimed_at"] else "",
@@ -172,13 +145,12 @@ def run_view(settings, store, run_id: str, tab: str = "items", span: str = "", e
     v = run_row(store, run)
     status = v["status"]
     v.update({"tab": tab, "live": status in LIVE, "can_resume": status == "interrupted", "can_cancel": status in ("running", "interrupted"),
-              "started_by": v["by"],
-              "source": run["source"], "fetched": run["fetched"], "cap": f"${settings.limits_for(flow)['cost_per_run_usd']:.2f}",
+              "source": run["source"], "cap": f"${settings.limits_for(flow)['cost_per_run_usd']:.2f}",
               "snapshot": run["snapshot"], "folder": str(store.path(run)),
               "flow_exists": (settings.plugins / "flows" / run["flow"] / "flow.yaml").is_file(),
               "retry_of": run["retry_of"], "retry_item": run["retry_item"], "from_stage": run["from_stage"], "error": error, "seq": max_seq(store)})
     if tab == "items":
-        v["items"] = [item_row(settings, store, run, it) for it in store.items(run_id)]
+        v["items"] = [item_row(store, run, it) for it in store.items(run_id)]
         v["retries"] = [{"run": r["id"], "item": r["retry_item"], "from_stage": r["from_stage"]}
                         for r in store.q("SELECT id, retry_item, from_stage FROM runs WHERE retry_of = ? ORDER BY started", run_id)]
     elif tab == "trace":
@@ -197,17 +169,14 @@ def run_view(settings, store, run_id: str, tab: str = "items", span: str = "", e
 # ---------- one item of a run ----------
 
 def retry_from(settings, store, run, it) -> str:
-    """The stage a retry of this item would start at, worked out as recovery.prepare_retry does; "" when it cannot be retried."""
+    """The stage a retry of this item would start at; "" when it cannot be retried."""
     if not it["ended_at"] or it["carried_from"]:
         return ""
     try:
         graph = installed(settings).graph(run["flow"])
     except Exception:  # the flow is gone or cannot be read
         return ""
-    if not graph.stages:
-        return ""
-    at = graph.start if it["ended_as"] == "done" else graph.position(store.last_try(run["id"], it["item_id"])[0])
-    return graph.start if at == END else at
+    return retry_stage(graph, store, it) if graph.stages else ""
 
 
 def item_view(settings, store, run_id: str, item_id: str, tab: str = "output", span: str = "", file: str = "") -> dict | None:
@@ -217,11 +186,11 @@ def item_view(settings, store, run_id: str, item_id: str, tab: str = "output", s
     if it is None or tab not in ITEM_TABS:
         return None
     origin = (store.run(it["carried_from"]) if it["carried_from"] else None) or run
-    row = item_row(settings, store, run, it)
-    work = item_row(settings, store, origin, store.item(origin["id"], item_id) or it) if origin is not run else row  # the numbers of the run that did the work
+    row = item_row(store, run, it)
+    work = item_row(store, origin, store.item(origin["id"], item_id) or it) if origin is not run else row  # the numbers of the run that did the work
     folder = store.path(it)
     working = run_status(origin)[0] in WORKING and not it["ended_at"]
-    v = {"run": run_id, "origin": origin["id"], "flow": run["flow"], "id": item_id, "tab": tab, "title": row["title"], "status": row["status"], "pill": row["pill"],
+    v = {"run": run_id, "origin": origin["id"], "id": item_id, "tab": tab, "title": row["title"], "status": row["status"], "pill": row["pill"],
          "ended_as": it["ended_as"], "reason": it["reason"] or "", "carried_from": it["carried_from"],
          "carried": {"status": work["status"], "pill": work["pill"]} if it["carried_from"] else None,
          "stage": work["stage"], "tokens": work["tokens"], "cost": work["cost"], "time": work["time"], "folder": str(folder), "report": row["report"],

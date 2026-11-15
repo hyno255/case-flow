@@ -3,9 +3,6 @@
 Read-only. A part is one piece of a try: the script or the agent doing the stage, the check script, or the
 reviewer. A call is one model request or one tool call. Every span says who did it and on which model, when it
 began and ended, what it used, and what it was given and answered, so a page can draw the tree beside a detail pane.
-
-Events from before `agent` and `model` were recorded still build: who comes from the try's `attempt_started.by`
-and from the reviewer's verdict, and the model from the calls themselves.
 """
 import json
 import time
@@ -135,9 +132,9 @@ def build(store, run, item_id: str | None = None, live: bool = False, calls: boo
             c = _span("tool", d.get("tool", "tool"), ts, who=d.get("agent") or "", tool_calls=1)
             c["blocks"].append(("arguments", _text(d.get("args", ""))))
             part(d.get("role"))["children"].append(c)
-            tr["open"].setdefault(d.get("call") or d.get("tool"), []).append(c)
+            tr["open"].setdefault(d["call"], []).append(c)
         elif t == "tool_result":
-            waiting = tr["open"].get(d.get("call") or d.get("tool")) or []
+            waiting = tr["open"].get(d["call"]) or []
             if waiting:
                 c = waiting.pop(0)
                 c["end"] = ts
@@ -167,7 +164,7 @@ def build(store, run, item_id: str | None = None, live: bool = False, calls: boo
         elif t == "verdict":
             by = d.get("by", "")
             if by.startswith("check "):
-                at = ts - d["seconds"] if "seconds" in d else (tr["execute"] or {}).get("end") or ts
+                at = ts - d["seconds"]
                 ph = _span("check", by[6:], at, ts, who="script")
                 tr["children"].append(ph)
             else:
@@ -265,7 +262,7 @@ def build(store, run, item_id: str | None = None, live: bool = False, calls: boo
             finish(c, depth + 1, f"{path}/{c['name'] if c['kind'] in ('item', 'stage', 'try') else i}")
 
     finish(root, 0, root["name"])
-    return {"root": root, "seconds": total, "ticks": [seconds_text(total * p / 100) for p in (0, 25, 50, 75, 100)]}
+    return {"root": root, "ticks": [seconds_text(total * p / 100) for p in (0, 25, 50, 75, 100)]}
 
 
 def walk(span: dict):

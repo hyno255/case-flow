@@ -12,7 +12,7 @@
 <button type="button" class="primary" data-post="/api/flows/{{ v.name }}/run" data-body='{"force": false}' data-confirm="Run {{ v.name }} now?" title="fetch {{ v.source }} now and run this flow; items already done and unchanged are carried over">Run</button>
 {% endif %}
 {% endblock %}
-{% block tabs %}{{ ui.tabs("/flows/" ~ v.name, [("design", "Design"), ("files", "Files"), ("runs", "Runs")], v.tab) }}{% endblock %}
+{% block tabs %}{{ ui.tabs("/flows/" ~ v.name, v.tabs, v.tab) }}{% endblock %}
 {% block main %}
 {{ ui.errors(v.errors) }}
 {% if v.error %}<p class="alert bad">Could not start a run: {{ v.error }}</p>{% endif %}
@@ -41,7 +41,7 @@
     <h2><span class="n">{{ loop.index }}</span> {{ s.id }} <span class="tag">{{ s.by }}</span></h2>
     {{ ui.kv(s.rows) }}
     {% if s.md_html %}
-    <h3>{% if s.md_href %}<a href="{{ s.md_href }}">{{ s.md }}</a>{% else %}FLOW.md{% endif %}</h3>
+    <h3>{% if s.md_href %}<a href="{{ s.md_href }}">{{ s.md }}</a>{% else %}{{ s.md }}{% endif %}</h3>
     <div class="prose">{{ s.md_html | safe }}</div>
     {% endif %}
   </section>

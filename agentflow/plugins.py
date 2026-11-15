@@ -241,14 +241,14 @@ class Registry:
             rows.append(("tools", n, self.check_tool(n), "used by " + ", ".join(users[n]) if n in users else "not used"))
         for n in self.names("agents"):
             errs = self.check_agent(n)
-            rows.append(("agents", n, errs, f"{len(self.agent(n)[0].get('tools') or [])} tools · no shell" if not errs else ""))
+            rows.append(("agents", n, errs, f"{len(self.agent(n)[0].get('tools') or [])} tools" if not errs else ""))
         for n in self.names("flows"):
             errs = self.check_flow(n)
             f = self.flow(n) if (self.dir("flows", n) / "flow.yaml").is_file() else {}
             stages = f.get(STAGES) or []
             kinds = [sum("run" in s for s in stages), sum("agent" in s for s in stages)]
             kinds.append(len(stages) - sum(kinds))
-            summary = f"{len(stages)} stages: " + ", ".join(f"{k} {label}" for k, label in zip(kinds, ("script", "specialist", "default agent")) if k)
+            summary = f"{len(stages)} stages: " + ", ".join(f"{k} {label}" for k, label in zip(kinds, ("script", "agent", "default agent")) if k)
             rows.append(("flows", n, errs, summary))
         return rows
 

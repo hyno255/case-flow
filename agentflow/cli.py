@@ -16,7 +16,6 @@ try, run, resume, retry and serve take --stand-in: the scripted model, which nee
 import argparse
 import asyncio
 import json
-import sys
 import time
 
 from .agents import ModelNotReady
@@ -25,7 +24,7 @@ from .layout import REPORT
 from .plugins import installed
 from .recovery import prepare_retry, request_cancel, resume_run, run_retry
 from .runner import FetchFailed, start_flow, try_flow
-from .schedule import set_schedule, tick
+from .schedule import register, set_schedule
 from .settings import Settings
 from .status import cost_text, item_status, run_status
 from .store import Store
@@ -149,9 +148,6 @@ def cmd_try(a, settings, store) -> int:
 
 
 def cmd_run(a, settings, store) -> int:
-    if a.flow not in installed(settings).names("flows"):
-        print(f"no flow '{a.flow}'; there is {', '.join(installed(settings).names('flows')) or 'none'}")
-        return 2
     print(f"{a.flow} · {flow_model(settings, a.flow)}\n")
     return print_run(store, asyncio.run(start_flow(settings, store, a.flow, force=a.force)))
 
@@ -168,7 +164,7 @@ def cmd_retry(a, settings, store) -> int:
 
 
 def cmd_cancel(a, settings, store) -> int:
-    how = request_cancel(settings, store, a.run)
+    how = request_cancel(store, a.run)
     print(f"{a.run}: " + ("asked to stop; running scripts are stopped now, and an agent finishes its try first" if how == "asked" else "closed; its process had already stopped"))
     return 0
 
@@ -177,7 +173,7 @@ def cmd_schedule(a, settings, store) -> int:
     if a.switch:
         nxt = set_schedule(settings, store, a.flow, a.switch == "on")
         print(f"{a.flow}: {a.switch}" + (f", next at {nxt}" if a.switch == "on" else ""))
-    tick(settings, store)  # registers any scheduled flow seen for the first time, switched off
+    register(settings, store)  # a scheduled flow seen for the first time is listed, switched off
     for row in store.q("SELECT * FROM schedules ORDER BY flow"):
         print(f"{row['flow']:<20} {'on ' if row['enabled'] else 'off'}  next {row['next_due']}")
     return 0
@@ -206,8 +202,8 @@ def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="agentflow")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    def command(name: str, fn, model: bool = False, **kw) -> argparse.ArgumentParser:
-        p = sub.add_parser(name, **kw)
+    def command(name: str, fn, model: bool = False) -> argparse.ArgumentParser:
+        p = sub.add_parser(name)
         p.set_defaults(fn=fn, watch=model and name != "serve")
         if model:
             p.add_argument("--stand-in", action="store_true", help="use the scripted model; needs no key and costs nothing")
@@ -256,6 +252,3 @@ def main(argv: list[str] | None = None) -> int:
         print("\nstopped")
         return 130
 
-
-if __name__ == "__main__":
-    sys.exit(main())

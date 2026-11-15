@@ -2,7 +2,7 @@
 name = "agentflow"
 version = "0.1.0"
 description = "A small engine that runs triage flows: sources, tools, agents and flows as plugin folders."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
   "pydantic-ai-slim[openai,mcp]>=2.68,<3",   # mcp: a tool plugin can be an MCP server
   "pyyaml>=6",

@@ -25,7 +25,7 @@ from ..health import EVERY, check_tools
 from ..layout import REPORT, confined
 from ..plugins import installed
 from ..recovery import claim_resume, prepare_retry, request_cancel, resume_run, run_retry, sweep
-from ..runner import run_due, start_flow
+from ..runner import checked, run_due, start_flow
 from ..schedule import set_schedule, tick
 from . import catalog, views
 
@@ -63,8 +63,14 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
             for flow, source, slot in tick(settings, store):
                 due.setdefault((source, slot), []).append(flow)
             for (source, slot), flows in due.items():  # flows due together on one source share one fetch
-                spawn([f"flows/{f}" for f in flows], run_due(settings, store, source, flows, slot))
+                spawn([f"flows/{f}" for f in flows], due_together(source, flows, slot))
             await asyncio.sleep(30)
+
+    async def due_together(source: str, flows: list[str], slot: str) -> None:
+        """A fetch that fails is every flow's reason; a flow that cannot start is its own."""
+        for flow, got in zip(flows, await run_due(settings, store, source, flows, slot)):
+            if isinstance(got, Exception):
+                errors[f"flows/{flow}"] = f"{type(got).__name__}: {got}"
 
     async def health():
         while True:
@@ -121,7 +127,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
         v = found(view)
         if request.url.path.startswith("/api/"):
             return JSONResponse(v)
-        return pages.TemplateResponse(request, template, {"v": v, "nav": views.nav(settings, store, section, errors), "fragment": "fragment" in request.query_params})
+        return pages.TemplateResponse(request, template, {"v": v, "nav": views.nav(settings, store, section), "fragment": "fragment" in request.query_params})
 
     def plain_file(folder: Path, path: str) -> PlainTextResponse:
         """One file of a folder, always as plain text, never run as a page."""
@@ -207,10 +213,6 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
     async def api_plugins():
         return catalog.plugins_view(settings, store, errors)
 
-    @app.get("/api/plugins/{kind}/{name}")
-    async def api_plugin(kind: str, name: str):
-        return found(plugin_view(kind, name))
-
     # ---- system ----
     @both("/settings")
     async def settings_page(request: Request):
@@ -223,9 +225,10 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
         live = installed(settings)
         if flow not in live.names("flows"):
             raise HTTPException(404, f"no flow '{flow}'")
-        errs = live.check_flow(flow)
-        if errs:
-            raise HTTPException(400, "the flow does not pass its checks: " + "; ".join(errs))
+        try:
+            checked(live, flow)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         spawn([f"flows/{flow}"], start_flow(settings, store, flow, force=body.force))
         return {"started": flow, "force": body.force, "go": f"/flows/{flow}/runs"}
 
@@ -241,7 +244,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
     @app.post("/api/runs/{run_id}/cancel")
     async def api_cancel(run_id: str):
         try:
-            return {"run": run_id, "result": request_cancel(settings, store, run_id)}
+            return {"run": run_id, "result": request_cancel(store, run_id)}
         except ValueError as e:
             raise HTTPException(409, str(e))
 

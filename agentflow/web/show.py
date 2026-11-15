@@ -20,6 +20,13 @@ def fetch_by(slot: str) -> str:
     return "schedule" if slot[:1].isdigit() else "trial" if slot.startswith("trial") else "by hand"
 
 
+def where_text(where) -> str:
+    """A flow's `where` in words: "severity = high or medium, team = payments"; nothing when it takes every item."""
+    if not isinstance(where, dict):
+        return ""
+    return ", ".join(f"{k} = {' or '.join(map(str, v)) if isinstance(v, list) else v}" for k, v in where.items())
+
+
 def seconds_between(start: str | None, end: str | None) -> float:
     if not start:
         return 0.0

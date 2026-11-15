@@ -97,7 +97,7 @@ class Runs(Site):
             self.assertEqual({i["id"]: (i["status"], i["stage"]) for i in run["items"]},
                              {"SEC-1042": ("done", "report"), "SEC-1043": ("done", "report"), "SEC-1044": ("needs a person", "fix"), "SEC-1045": ("needs a person", "analyse")})
             self.assertEqual(run["items"][0]["title"], "checkout-api · libexample-xml")
-            self.assertEqual((run["status"], run["started_by"]), ("finished", "by hand"))
+            self.assertEqual((run["status"], run["by"]), ("finished", "by hand"))
             page = c.get(f"/runs/{run_id}").text
             for item in run["items"]:
                 self.assertTrue(os.path.isdir(item["folder"]))
@@ -306,7 +306,7 @@ class Runs(Site):
     def test_a_cost_that_was_not_recorded_is_a_dash(self):
         with TestClient(self.app) as c:
             run_id = self.run_once(c)
-            self.store.db.execute("UPDATE attempts SET cost_usd = NULL, cost_status = 'unknown' WHERE run_id = ?", (run_id,))  # as after tries that were cut short
+            self.store.db.execute("UPDATE attempts SET cost_usd = NULL WHERE run_id = ?", (run_id,))  # as after tries that were cut short
             self.store.db.execute("UPDATE verdicts SET cost_usd = NULL WHERE run_id = ?", (run_id,))
             for url in ["/"] + run_pages(run_id):
                 page = c.get(url)
@@ -362,7 +362,7 @@ class Changes(Site):
         self.store.db.execute("UPDATE schedules SET next_due = '2026-11-13T07:00:00'")
         with TestClient(create_app(self.settings, self.store, hosts=("testserver",))) as c:  # with the server's own loops
             run_id = self.finished_run(c)
-            self.assertEqual(c.get(f"/api/runs/{run_id}").json()["started_by"], "schedule")
+            self.assertEqual(c.get(f"/api/runs/{run_id}").json()["by"], "schedule")
             self.assertIn("<small>schedule</small>", c.get("/").text)
             (fetch,) = c.get("/api/sources/security-tickets/fetches").json()["fetches"]
             self.assertEqual((fetch["by"], fetch["count"], fetch["runs"]), ("schedule", 4, [{"id": run_id, "flow": "vuln-triage"}]))
@@ -372,7 +372,6 @@ class Changes(Site):
     def test_tool_health_is_checked_and_shown(self):
         with TestClient(self.app) as c:
             self.assertIn(">not checked<", c.get("/tools").text)
-            self.assertNotIn("Needs attention", c.get("/").text)
             (self.home / "plugins/tools/deps-why/health.sh").write_text("#!/bin/sh\necho the tree service is down\nexit 1\n")
             rows = {r["tool"]: r for r in c.post("/api/tools/health", headers=CHANGE).json()}
             self.assertEqual({n: r["ok"] for n, r in rows.items()}, {"deps-why": False, "sbom-query": True})
@@ -383,12 +382,11 @@ class Changes(Site):
             page = c.get("/tools/deps-why").text
             for text in (">failing<", "the tree service is down", 'data-post="/api/tools/deps-why/health"', 'href="/tools/deps-why/files?file=health.sh"'):
                 self.assertIn(text, page)
-            # what fails is named on every page, and on the flow whose agents use it
-            self.assertRegex(c.get("/settings").text, r'(?s)Needs attention.*href="/tools/deps-why"[^>]*>tool deps-why is failing')
+            # the flow whose agents use it says so
             self.assertIn("is failing its health check: the tree service is down", c.get("/flows/vuln-triage").text)
             shutil.copy(ROOT / "plugins/tools/deps-why/health.sh", self.home / "plugins/tools/deps-why/health.sh")
             self.assertTrue(c.post("/api/tools/deps-why/health", headers=CHANGE).json()["ok"])
-            self.assertNotIn("Needs attention", c.get("/").text)
+            self.assertNotIn("is failing its health check", c.get("/flows/vuln-triage").text)
             self.assertEqual(c.post("/api/tools/nope/health", headers=CHANGE).status_code, 404)
 
     def test_a_failing_source_is_shown(self):
@@ -444,8 +442,7 @@ class Design(Site):
                               ("/tools", ("Used by", "<code>sbom_file</code>", 'href="/agents/origin-analyst"')), ("/sources", ("weekdays", 'href="/flows/vuln-triage"', ">ok<"))):
                 for text in gone:
                     self.assertNotIn(text, c.get(url).text, url)
-            for url in ("/flows/nope", "/agents/nope", "/tools/nope", "/sources/nope", "/flows/vuln-triage/nope", "/tools/sbom-query/method", "/api/plugins/tools/nope",
-                        "/api/plugins/things/x", "/plugins"):
+            for url in ("/flows/nope", "/agents/nope", "/tools/nope", "/sources/nope", "/flows/vuln-triage/nope", "/tools/sbom-query/method", "/api/tools/nope", "/plugins"):
                 self.assertEqual(c.get(url).status_code, 404, url)
 
             # a flow lists its runs

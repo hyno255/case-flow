@@ -11,7 +11,8 @@ from pathlib import Path
 from .agents import build_model
 from .layout import ENGINE_OWNED, ITEMS
 from .plugins import installed, run_plugins
-from .runner import create_run, execute, finish
+from .graph import END
+from .runner import checked, create_run, execute, finish
 from .status import STALE_AFTER
 
 
@@ -54,9 +55,11 @@ async def resume_run(settings, store, run_id: str, *, claimed: bool = False, sta
     flow's graph where its latest try left it, in its own folder, with the reasons from any earlier rejected tries."""
     if not claimed:
         claim_resume(store, run_id, stale_after)
-    build_model(settings)
     run = store.run(run_id)
-    graph = run_plugins(store, run).graph(run["flow"])
+    snap = run_plugins(store, run)
+    for spec in snap.models_used(run["flow"]):
+        build_model(settings, spec)  # stop before any work if a model this run uses is not usable
+    graph = snap.graph(run["flow"])
     todo = []
     for it in store.items(run_id, open_only=True):
         start = graph.position(*store.last_try(run_id, it["item_id"]))
@@ -64,6 +67,12 @@ async def resume_run(settings, store, run_id: str, *, claimed: bool = False, sta
     store.db.execute("UPDATE items SET claimed_at = NULL WHERE run_id = ? AND ended_at IS NULL", (run_id,))
     store.emit(run_id, None, None, "run_resumed", items=[t[0]["id"] for t in todo])
     return await execute(settings, store, run_id, todo)
+
+
+def retry_stage(graph, store, it) -> str:
+    """The stage a retry of an ended item starts at: the one it stopped at, or the first when it was done."""
+    at = graph.start if it["ended_as"] == "done" else graph.position(store.last_try(it["run_id"], it["item_id"])[0])  # a new run: the tries start afresh
+    return graph.start if at == END else at
 
 
 def prepare_retry(settings, store, run_id: str, item_id: str) -> str:
@@ -80,16 +89,12 @@ def prepare_retry(settings, store, run_id: str, item_id: str) -> str:
     if not it["ended_at"]:
         raise ValueError(f"{item_id} has not ended in {run_id}; resume or cancel the run first")
     live = installed(settings)
-    errs = live.check_flow(old["flow"])
-    if errs:
-        raise ValueError("the flow does not pass its checks: " + "; ".join(errs))
+    checked(live, old["flow"])
     graph = live.graph(old["flow"])
-    last, _ = store.last_try(run_id, item_id)
-    from_stage = graph.start if it["ended_as"] == "done" else graph.position(last)  # a new run: the tries start afresh
-    from_stage = graph.start if from_stage == "end" else from_stage
+    from_stage = retry_stage(graph, store, it)
     kept = graph.before(from_stage)
 
-    new_id, folder = create_run(settings, store, live, old["flow"], source=old["source"], fetch_id=None, trial=bool(old["trial"]), fetched=1,
+    new_id, folder = create_run(settings, store, live, old["flow"], source=old["source"], fetch_id=None, trial=bool(old["trial"]),
                                  retry_of=run_id, retry_item=item_id, from_stage=from_stage)
     work, old_work = folder / ITEMS / item_id, store.path(it)
     if kept:  # the hand-over from the kept stages; the engine's own records of the old run stay with the old run
@@ -108,7 +113,7 @@ async def run_retry(settings, store, new_run: str) -> str:
     return await execute(settings, store, new_run, [(json.loads(it["payload"]), store.path(it), run["from_stage"] if run["from_stage"] != first else None)])
 
 
-def request_cancel(settings, store, run_id: str, stale_after: float = STALE_AFTER) -> str:
+def request_cancel(store, run_id: str, stale_after: float = STALE_AFTER) -> str:
     """Ask a run to stop. A live run stops its running scripts at once and each item before its next stage; an agent finishes its try. A run whose process is gone is closed here.
     Folders are kept either way. Returns 'asked' or 'closed'."""
     if store.need_run(run_id)["ended"]:

@@ -57,7 +57,6 @@
   // ---- the log: built from the stream, so replay and live are the same code ----
   var stageWho = log ? JSON.parse(log.dataset.who || "{}") : {};  // stage -> who does it, for events that do not say
   var tryBy = {};     // item|stage|try -> who does that try, from its attempt_started
-  var unnamed = {};   // item|stage|try -> the cells of a reviewer's lines, until its verdict names the reviewer
   function who(e) {
     var key = e.item + "|" + e.stage + "|" + e.n;
     if (e.type === "attempt_started") tryBy[key] = e.by === "script" ? (stageWho[e.stage] || "script") : e.by;
@@ -65,7 +64,6 @@
     if (e.script) return "script " + e.script;
     if (!e.stage || e.type === "stage_passed" || e.type === "sent_back" || e.type === "attempt_interrupted") return "engine";
     if (e.agent) return e.agent;
-    if (e.role) return null;  // an event from before agents were named: the verdict that follows says who reviewed
     return tryBy[key] || stageWho[e.stage] || "engine";
   }
   function took(e) { return e.seconds != null ? " · " + e.seconds + "s" : ""; }
@@ -130,22 +128,17 @@
     var seen = Number((part && part.dataset.seq) || 0);  // the page already shows everything up to here
     var withItems = !!log.dataset.items;
     follow(log.dataset.events, function (e) {
-      var l = line(e), by = who(e), key = e.item + "|" + e.stage + "|" + e.n;
+      var l = line(e);
       if (l) {
-        var li = document.createElement("li"), w = cell("w", by || "reviewer");
+        var li = document.createElement("li");
         if (l[0]) li.className = l[0];
         li.dataset.item = e.item || "";
         li.dataset.type = e.type;
         li.append(cell("t", new Date(e.ts * 1000).toLocaleTimeString([], { hour12: false })));
         if (withItems) li.append(cell("i", e.item || "run"));
-        li.append(cell("s", e.stage || ""), w, cell("m", l[1]));
-        if (by === null) (unnamed[key] = unnamed[key] || []).push(w);
+        li.append(cell("s", e.stage || ""), cell("w", who(e)), cell("m", l[1]));
         waiting.push(li);
         if (!drawing) { drawing = true; requestAnimationFrame(draw); }
-      }
-      if (e.type === "verdict" && String(e.by).indexOf("check ") !== 0 && unnamed[key]) {
-        unnamed[key].forEach(function (c) { c.textContent = e.by; });
-        delete unnamed[key];
       }
       if (e.seq > seen && !QUIET[e.type]) refresh();
     });
@@ -190,7 +183,7 @@
           var answer = {};
           try { answer = JSON.parse(t); } catch (e) { answer = { detail: t }; }
           if (!r.ok) window.alert("That did not work: " + (answer.detail || t));
-          else if (answer.go || b.dataset.go) window.location.href = answer.go || b.dataset.go;  // for example, the new run a retry created
+          else if (answer.go) window.location.href = answer.go;  // for example, the new run a retry created
         });
       })
       .catch(function () { window.alert("The server could not be reached."); })

@@ -7,9 +7,7 @@
 {% block crumbs %}<a href="/{{ v.kind }}">{{ v.kind | capitalize }}</a>{% endblock %}
 {% block heading %}{{ v.name }} {{ ui.check(v.errors) }}{% endblock %}
 {% block tabs %}
-<nav class="tabs" aria-label="Sections">
-  {% for t in v.tabs %}<a href="{{ base }}{% if not loop.first %}/{{ t }}{% endif %}"{% if t == v.tab %} aria-current="page"{% endif %}>{{ t | capitalize }}</a>{% endfor %}
-</nav>
+{{ ui.tabs(base, v.tabs, v.tab) }}
 {% endblock %}
 {% block main %}
 {{ ui.errors(v.errors) }}
@@ -25,7 +23,7 @@
     <table class="kv">
       <tr><th>state</th><td>{{ ui.health(v.health) }}</td></tr>
       <tr><th>check said</th><td>{{ v.health.detail or "—" }}</td></tr>
-      <tr><th>checked</th><td>{% if v.health.at %}{{ v.health.at }}{% else %}<span title="checked when the server starts, every few minutes, and when asked">not yet</span>{% endif %}</td></tr>
+      <tr><th>checked</th><td>{{ v.health.at or "not yet" }}</td></tr>
     </table>
   </section>
   {% endif %}
@@ -33,7 +31,7 @@
   <section class="card">
     <h2>Accepted by</h2>
     <table class="kv">
-      {% for a in v.accepted %}<tr><th><a href="/flows/{{ a.flow }}">{{ a.flow }}</a></th><td>{{ ui.schedule(a.schedule) }}{% if a.where %} <small>where {% for k, w in a.where.items() %}{{ k }} = {{ w if w is string else w | join(" or ") }}{% if not loop.last %}, {% endif %}{% endfor %}</small>{% else %} <small>every item</small>{% endif %}</td></tr>
+      {% for a in v.accepted %}<tr><th><a href="/flows/{{ a.flow }}">{{ a.flow }}</a></th><td>{{ ui.schedule(a.schedule) }} <small>{% if a.where %}where {{ a.where }}{% else %}every item{% endif %}</small></td></tr>
       {% else %}<tr><td class="none">No flow accepts this source, so it is never fetched.</td></tr>{% endfor %}
     </table>
   </section>

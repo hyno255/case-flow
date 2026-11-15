@@ -16,7 +16,7 @@
 {% if v.error %}<p class="alert bad">{{ v.error }}</p>{% endif %}
 <dl class="metrics">
   <div><dt>Flow</dt><dd>{% if v.flow_exists %}<a href="/flows/{{ v.flow }}">{{ v.flow }}</a>{% else %}{{ v.flow }}{% endif %}</dd></div>
-  <div><dt>Started</dt><dd>{{ v.started }} <small>{{ v.started_by }}{% if v.source %} · {{ v.source }}{% endif %}</small></dd></div>
+  <div><dt>Started</dt><dd>{{ v.started }} <small>{{ v.by }}{% if v.source %} · {{ v.source }}{% endif %}</small></dd></div>
   <div class="two"><dt>Items</dt><dd>{{ v.n_items }} {{ ui.counts(v.counts) }}</dd></div>
   <div><dt>Tokens</dt><dd>{{ v.tokens | num }}</dd></div>
   <div><dt>Cost</dt><dd>{{ ui.cost(v.cost) }} <small title="the run stops starting tries at this cost">of {{ v.cap }}</small></dd></div>
@@ -26,7 +26,7 @@
   <div class="wide"><dt>Run folder</dt><dd>{{ ui.path(v.folder) }}</dd></div>
 </dl>
 {% endblock %}
-{% block tabs %}{{ ui.tabs("/runs/" ~ v.id, [("items", "Items"), ("trace", "Trace"), ("log", "Log"), ("flow", "Flow")], v.tab) }}{% endblock %}
+{% block tabs %}{{ ui.tabs("/runs/" ~ v.id, ["items", "trace", "log", "flow"], v.tab) }}{% endblock %}
 {% block main %}
 {% if v.tab == "items" %}
 <div class="scroll">
