@@ -9,17 +9,15 @@ import os
 from pathlib import Path
 from urllib.parse import quote
 
-from ..graph import compile_flow, stage_by, stage_tries, validated
-from ..health import EVERY
+from ..graph import compile_flow, stage_by, validated
 from ..layout import confined
 from ..plugins import STAGES, installed
 from ..render import md_to_html
-from ..settings import MODEL_DEFAULTS
+from ..settings import MODEL_DEFAULTS, SECTIONS
 from . import draw, show, views
 
 KINDS = ("flows", "agents", "tools", "sources")
 TABS = {"flows": ("design", "files", "runs"), "agents": ("config", "method", "files"), "tools": ("config", "files"), "sources": ("config", "fetches", "files")}
-STALE = 3 * EVERY  # seconds after which a health answer is too old to trust: the server that made it has stopped
 MAIN = {"flows": "flow.yaml", "agents": "AGENT.md", "tools": "tool.yaml", "sources": "source.yaml"}  # the file a Files tab opens with
 BUILT_IN = ("list_files", "read_file", "write_file", "ask_for_person")  # handed to every agent by the engine; a reviewer gets no write_file
 
@@ -68,7 +66,7 @@ def grants_view(settings, key: str) -> list[dict]:
 def files_tab(settings, kind: str, name: str, file: str) -> dict:
     folder = settings.plugins / kind / name
     tree = show.file_tree(folder, file)
-    return {"tree": tree, "file": show.file_preview(folder, file or show.first_file(tree, (MAIN[kind],)), f"/plugins/{kind}/{name}/files")}
+    return {"tree": tree, "file": show.file_preview(folder, file or show.first_file(tree, (MAIN[kind],)), f"/plugins/{kind}/{name}/files", settings.show["file_chars"])}
 
 
 def file_link(kind: str, name: str, folder: Path, rel) -> str:
@@ -111,7 +109,7 @@ def flow_rows(settings, store, errors: dict) -> list[dict]:
         last = store.one("SELECT * FROM runs WHERE flow = ? ORDER BY started DESC, rowid DESC LIMIT 1", n)
         rows.append({"name": n, "source": str(f.get("source") or ""), "schedule": schedule_cell(store, n, f), "stages": len(f.get(STAGES) or []),
                      "errors": _safe(live.check_flow, n), "error": errors.get(f"flows/{n}", ""),
-                     "last_run": views.run_row(store, last) if last else None})
+                     "last_run": views.run_row(settings, store, last) if last else None})
     return rows
 
 
@@ -126,12 +124,13 @@ def agent_rows(settings) -> list[dict]:
     return rows
 
 
-def health_cell(store, name: str) -> dict:
-    """The last answer of a tool's health check: {state: ok | failing | not checked, detail, at}."""
+def health_cell(settings, store, name: str) -> dict:
+    """The last answer of a tool's health check: {state: ok | failing | not checked, detail, at}. An answer older than
+    engine.health_stale_seconds is marked old: the server that made it has stopped."""
     h = store.one("SELECT * FROM health WHERE tool = ?", name)
     if h is None:
         return {"state": "not checked", "pill": "wait", "detail": "", "at": "", "old": False}
-    old = show.seconds_between(h["checked"], None) > STALE
+    old = show.seconds_between(h["checked"], None) > settings.engine["health_stale_seconds"]
     return {"state": "ok" if h["ok"] else "failing", "pill": "done" if h["ok"] else "bad", "detail": h["detail"] or "",
             "at": show.when(h["checked"]), "old": old}
 
@@ -143,7 +142,7 @@ def tool_rows(settings, store) -> list[dict]:
     for n in live.names("tools"):
         t = _load(live.tool, n, default={})
         rows.append({"name": n, "description": t.get("description", ""), "how": "MCP server" if "mcp" in t else "script",
-                     "used": used.get(n, []), "errors": _safe(live.check_tool, n), "health": health_cell(store, n)})
+                     "used": used.get(n, []), "errors": _safe(live.check_tool, n), "health": health_cell(settings, store, n)})
     return rows
 
 
@@ -171,16 +170,16 @@ def plugins_view(settings, store, errors: dict) -> dict:
 
 # ---------- one flow ----------
 
-def failing_tools(store, live, f: dict) -> list[dict]:
+def failing_tools(settings, store, live, f: dict) -> list[dict]:
     """The tools this flow's agents use whose last health check failed."""
     agents = {s[k] for s in f.get(STAGES) or [] if isinstance(s, dict) for k in ("agent", "review") if k in s}
     tools = sorted({t for a in agents for t in _load(live.agent, a, default=({}, ""))[0].get("tools") or []})
-    return [{"name": t, "detail": h["detail"]} for t in tools if (h := health_cell(store, t))["state"] == "failing"]
+    return [{"name": t, "detail": h["detail"]} for t in tools if (h := health_cell(settings, store, t))["state"] == "failing"]
 
 
 def flow_design(settings, store, live, name: str, f: dict) -> dict:
     """The Design tab: the graph, the flow's own keys, and one block per stage."""
-    g = compile_flow(f)[0]
+    g = compile_flow(f, settings.limits_for(f))[0]
     folder = live.dir("flows", name)
     agents = live.names("agents")
 
@@ -238,7 +237,7 @@ def flow_design(settings, store, live, name: str, f: dict) -> dict:
             rows.append(model_row("review model", _load(live.model_for, name, {}, s.get("review"), default=None), inherited(s.get("review"))))
         if validated(s):
             if "tries" not in s:
-                rows.append(row("tries", stage_tries(s), mark="default"))
+                rows.append(row("tries", g.tries(sid), mark="default"))
             if "on_fail" not in s:
                 rows.append(row("on_fail", sid, f"#stage-{sid}", mark="default"))
         if "next" not in s:
@@ -248,8 +247,8 @@ def flow_design(settings, store, live, name: str, f: dict) -> dict:
                        "md_href": file_link("flows", name, folder, f"{STAGES}/{sid}.md"), "md_html": md_to_html(md) if md else ""})
 
     goal = _load(live.flow_goal, name, default="")
-    return {"graph": draw.graph(f, _load(live.source, str(f.get("source") or ""), default={})), "config": config, "stages": stages,
-            "failing_tools": failing_tools(store, live, f),
+    return {"graph": draw.graph(f, settings.limits_for(f), _load(live.source, str(f.get("source") or ""), default={})), "config": config, "stages": stages,
+            "failing_tools": failing_tools(settings, store, live, f),
             "goal_html": md_to_html(goal) if goal else "", "goal_href": file_link("flows", name, folder, "FLOW.md"),
             "yaml_href": file_link("flows", name, folder, "flow.yaml")}
 
@@ -268,7 +267,7 @@ def flow_view(settings, store, name: str, tab: str, file: str, errors: dict) -> 
     elif tab == "files":
         v.update(files_tab(settings, "flows", name, file))
     else:
-        v["runs"] = views.run_rows(store, flow=name)
+        v["runs"] = views.run_rows(settings, store, flow=name)
     return v
 
 
@@ -303,7 +302,7 @@ def tool_view(settings, store, name: str, tab: str = "config", file: str = "") -
         return None
     t = _load(live.tool, name, default={})
     v = {"kind": "tools", "name": name, "tab": tab, "tabs": TABS["tools"], "errors": _safe(live.check_tool, name), "folder": str(folder),
-         "health": health_cell(store, name)}
+         "health": health_cell(settings, store, name)}
     if tab == "config":
         by_agent, by_tool = uses(live)
         agents = by_tool.get(name, [])
@@ -340,13 +339,16 @@ def source_view(settings, store, name: str, tab: str = "config", file: str = "")
                          "time": show.duration(show.seconds_between(f["started"], f["ended"])) if f["ended"] else "",
                          "folder": str(store.root / f["folder"]) if f["folder"] else "",
                          "runs": [{"id": r["id"], "flow": r["flow"]} for r in store.q("SELECT id, flow FROM runs WHERE fetch_id = ?", f["id"])]}
-                        for f in store.q("SELECT * FROM fetches WHERE source = ? ORDER BY id DESC LIMIT 30", name)]
+                        for f in store.q("SELECT * FROM fetches WHERE source = ? ORDER BY id DESC LIMIT ?", name, settings.show["rows"])]
     else:
         v.update(files_tab(settings, "sources", name, file))
     return v
 
 
 # ---------- the platform ----------
+
+NUMBERS = {"limits": "Limits of a run", "engine": "Engine timings", "show": "Shown on pages"}  # the sections of numbers in agentflow.yaml
+
 
 def settings_view(settings) -> dict:
     """agentflow.yaml as the engine reads it. A key is shown as the name of its variable and whether that is set, never as a value."""
@@ -361,4 +363,6 @@ def settings_view(settings) -> dict:
         kind, _, name = str(key).partition("/")
         grants.append({"plugin": str(key), "href": f"/{key}" if name in kinds.get(kind, []) else "", "secrets": grants_view(settings, key)})
     return {"file": str(settings.home / "agentflow.yaml"), "plugins": str(settings.plugins), "data": str(settings.data), "errors": settings.check(),
-            "models": models, "limits": [row(k, val) for k, val in settings.limits.items()], "grants": grants}
+            "models": models, "grants": grants,
+            "numbers": [{"name": s, "title": NUMBERS[s], "rows": [row(k, val, mark="" if k in written else "default") for k, val in getattr(settings, s).items()]}
+                        for s in SECTIONS for written in [settings.written[s] if isinstance(settings.written[s], dict) else {}]]}

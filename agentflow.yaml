@@ -12,10 +12,24 @@ models:                       # every model the flows may use, by a name of your
 
 model: luna                   # the default. A flow, a stage or an agent can name another with `model:`
 
-limits:                       # defaults; a flow's own `limits` wins
-  at_once: 4
-  minutes_per_item: 10
-  cost_per_run_usd: 2.00
+limits:                       # what one run may use; a flow's own `limits` wins
+  at_once: 4                  # items worked on at the same time
+  minutes_per_item: 10        # one item, all its stages together
+  cost_per_run_usd: 2.00      # the run stops starting stages at this cost
+  script_seconds: 120         # one script: a stage's, a check, a tool, a source's fetch
+  model_calls: 20             # one agent run; a run that needs more is stuck
+  tries: 2                    # a stage that names no `tries`
+  max_tries: 5                # the most a stage may ask for
+  read_chars: 20000           # of a file, given to the agent that reads it
+  tool_chars: 8000            # of a tool's answer, given to the agent that called it
+  reason_chars: 2000          # of a failed check's or tool's output: what the next try is told
+  error_chars: 500            # of an error or a failed script's output, kept as the reason
+  event_chars: 1500           # of a tool's answer or a script's output, kept in the trace
+
+# The engine's timings and what the pages show can be set the same way, under `engine:` and `show:`.
+# The Settings page lists every key with its value; agentflow/defaults.yaml holds the defaults. For example:
+# engine: {health_every_seconds: 600, stale_after_seconds: 120}
+# show: {rows: 100}
 
 grants: {}                    # the secrets a plugin's scripts may see, by variable name; a script sees no other, e.g.
 #  sources/security-tickets:

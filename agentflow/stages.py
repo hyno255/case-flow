@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .agents import CHECKER, DEFAULT_AGENT, Verdict, file_tools, person_tool, run_agent, plugin_tool
-from .graph import END, Graph, stage_by, stage_tries
+from .graph import END, Graph, stage_by
 from .layout import ATTEMPTS, VERDICTS, prompt_file, verdict_file, visible_files
 from .procs import DONE_EARLY, STOPPED, run_proc
 
@@ -59,11 +59,12 @@ class Ctx:
     async def script(self, name: str, stdin: str) -> tuple[int, str, float]:
         """Run one of the flow's own scripts for this item: (exit code, output, seconds). A cancelled run stops it."""
         plugin, began = f"flows/{self.flow}", time.time()
-        code, out = await run_proc([str((self.flow_dir / name).resolve())], self.work, stdin, self.env(plugin), stop=self.cancelled)
+        code, out = await run_proc([str((self.flow_dir / name).resolve())], self.work, stdin, self.env(plugin), stop=self.cancelled,
+                                   **self.settings.proc(self.limits))
         return code, out, round(time.time() - began, 3)
 
     def tool(self, name: str):
-        return plugin_tool(self.registry, name, self.work, self.env(f"tools/{name}"))
+        return plugin_tool(self.settings, self.registry, name, self.work, self.env(f"tools/{name}"), self.limits)
 
     def emit(self, stage: str | None, type_: str, **data) -> None:
         self.store.emit(self.run_id, self.item_id, stage, type_, folder=self.work, **data)
@@ -111,11 +112,11 @@ async def _by_script(ctx: Ctx, stage: dict, n: int, attempt: int) -> End:
         ctx.emit(sid, "attempt_cancelled", n=n, script=stage["run"])
         return "cancelled", f"the run was cancelled while {stage['run']} was running; the script was stopped"
     ctx.store.end_attempt(attempt, "done" if code in (0, DONE_EARLY) else "error")
-    ctx.emit(sid, "attempt_ended", n=n, exit_code=code, script=stage["run"], seconds=seconds, output=out[-1500:])
+    ctx.emit(sid, "attempt_ended", n=n, exit_code=code, script=stage["run"], seconds=seconds, output=out[-ctx.limits["event_chars"]:])
     if code == DONE_EARLY:
-        return "done_early", out[-500:] or f"the {sid} script ended this item early"
+        return "done_early", out[-ctx.limits["error_chars"]:] or f"the {sid} script ended this item early"
     if code != 0:
-        return "failed", f"{stage['run']} exited with code {code}: {out[-500:]}"
+        return "failed", f"{stage['run']} exited with code {code}: {out[-ctx.limits['error_chars']:]}"
     return None
 
 
@@ -138,14 +139,14 @@ async def _by_agent(ctx: Ctx, stage: dict, n: int, attempt: int, feedback: list[
         prompt += "\n\nEarlier attempts failed validation. Fix these:\n" + "\n".join(feedback)
     (ctx.work / prompt_file(sid, n)).write_text(prompt)  # evidence of what the try was told
     asked: list[str] = []
-    tools = file_tools(ctx.work, can_write=True) + extra + [person_tool(asked)]
+    tools = file_tools(ctx.work, True, ctx.limits) + extra + [person_tool(asked)]
     try:
-        _, stats = await run_agent(ctx.settings, instructions, prompt, tools, model=ctx.registry.model_for(ctx.flow, stage, stage.get("agent")),
+        _, stats = await run_agent(ctx.settings, instructions, prompt, tools, model=ctx.registry.model_for(ctx.flow, stage, stage.get("agent")), limits=ctx.limits,
                                    on_event=lambda t, **d: ctx.emit(sid, t, n=n, agent=by, **d))
     except Exception as e:  # a model or network error: the item fails and the next run takes it again
         ctx.store.end_attempt(attempt, "error")
-        ctx.emit(sid, "attempt_ended", n=n, error=str(e)[:500])
-        return "failed", f"{by} could not finish {sid}: {type(e).__name__}: {str(e)[:300]}"
+        ctx.emit(sid, "attempt_ended", n=n, error=str(e)[:ctx.limits["error_chars"]])
+        return "failed", f"{by} could not finish {sid}: {type(e).__name__}: {str(e)[:ctx.limits['error_chars']]}"
     ctx.store.end_attempt(attempt, "done", stats)
     ctx.emit(sid, "attempt_ended", n=n, **stats)
     if asked:
@@ -171,7 +172,7 @@ async def _validate(ctx: Ctx, stage: dict, n: int, attempt: int) -> tuple[list[d
             ctx.store.set_attempt_outcome(attempt, "cancelled")
             ctx.emit(sid, "attempt_cancelled", n=n, script=stage["check"])
             return verdicts, ("cancelled", f"the run was cancelled while {stage['check']} was checking {sid}; the script was stopped")
-        record({"by": f"check {stage['check']}", "passed": code == 0, "reason": out[-2000:], "seconds": seconds})
+        record({"by": f"check {stage['check']}", "passed": code == 0, "reason": out[-ctx.limits["reason_chars"]:], "seconds": seconds})
     if all(v["passed"] for v in verdicts) and ("done_when" in stage or "review" in stage):
         if "review" in stage:
             meta, method = ctx.registry.agent(stage["review"])
@@ -182,12 +183,12 @@ async def _validate(ctx: Ctx, stage: dict, n: int, attempt: int) -> tuple[list[d
         ask = (f"Stage '{sid}' for item {ctx.item_id}. Done when: {stage.get('done_when', 'your method is satisfied')}\n"
                f"The work folder holds: {', '.join(visible_files(ctx.work))}.")
         try:
-            v, stats = await run_agent(ctx.settings, instructions, ask, file_tools(ctx.work, can_write=False) + extra, output_type=Verdict,
+            v, stats = await run_agent(ctx.settings, instructions, ask, file_tools(ctx.work, False, ctx.limits) + extra, output_type=Verdict, limits=ctx.limits,
                                        model=ctx.registry.model_for(ctx.flow, {}, stage.get("review")),  # the reviewer's own model, else the flow's
                                        on_event=lambda t, **d: ctx.emit(sid, t, n=n, agent=who, role="reviewer", **d))
             record({"by": who, "passed": v.passed, "reason": v.reason, "needs_person": v.needs_person, **stats})
         except Exception as e:  # a validator that crashes never passes by default
-            record({"by": who, "passed": False, "reason": f"reviewer error: {type(e).__name__}: {str(e)[:300]}", "error": True})
+            record({"by": who, "passed": False, "reason": f"reviewer error: {type(e).__name__}: {str(e)[:ctx.limits['error_chars']]}", "error": True})
     if verdicts:  # every round is kept, pass or fail
         (ctx.work / verdict_file(sid, n)).write_text(
             f"Stage {sid}, attempt {n}\n\n" + "\n".join(f"- {v['by']}: {'pass' if v['passed'] else 'fail'}. {v['reason']}" for v in verdicts) + "\n")
@@ -197,7 +198,8 @@ async def _validate(ctx: Ctx, stage: dict, n: int, attempt: int) -> tuple[list[d
 async def run_stage(ctx: Ctx, stage: dict) -> tuple[str, str]:
     """One visit of an item to a stage. Returns (outcome, reason). Outcome: passed, back (not accepted, and the
     fail edge leads to another stage), done_early, needs_person, failed, over_budget or cancelled."""
-    sid, tries, by = stage["id"], stage_tries(stage), stage_by(stage)
+    sid, by = stage["id"], stage_by(stage)
+    tries = ctx.graph.tries(sid)
     back = ctx.graph.after(sid, "fail")
     while True:
         # Only a try that validation rejected counts against `tries`; one cut short by a stopped process does not.
@@ -253,7 +255,7 @@ async def run_item(ctx: Ctx, start_at: str | None = None) -> tuple[str, str]:
                 at = ctx.graph.after(at)
             elif outcome == "back":
                 to = ctx.graph.after(at, "fail")
-                ctx.emit(at, "sent_back", to=to, reason=reason[:500])
+                ctx.emit(at, "sent_back", to=to, reason=reason[:ctx.limits["error_chars"]])
                 at = to
             elif outcome == "done_early":
                 return "done", f"ended early at {at}: {reason}"

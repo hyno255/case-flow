@@ -26,16 +26,20 @@ def max_seq(store) -> int:
     return store.one("SELECT COALESCE(MAX(seq), 0) n FROM events")["n"]
 
 
+def stale(settings) -> float:
+    return settings.engine["stale_after_seconds"]
+
+
 def nav(settings, store, section: str) -> dict:
     """What the sidebar shows on every page."""
-    running = sum(run_status(r)[0] in WORKING for r in store.q("SELECT * FROM runs WHERE ended IS NULL"))
+    running = sum(run_status(r, stale(settings))[0] in WORKING for r in store.q("SELECT * FROM runs WHERE ended IS NULL"))
     return {"section": section, "running": running}
 
 
-def flow_of(store, run) -> dict:
+def flow_of(settings, store, run) -> dict:
     """The flow as this run used it, from the run's own copy of the plugin files."""
     try:
-        f = run_plugins(store, run).flow(run["flow"])
+        f = run_plugins(settings, store, run).flow(run["flow"])
     except Exception:  # the copy is gone or cannot be read: the pages still show what the store holds
         return {}
     return f if isinstance(f, dict) else {}
@@ -48,10 +52,10 @@ def stage_who(flow: dict) -> dict:
 
 # ---------- the list of runs ----------
 
-def item_counts(run, rows) -> list[dict]:
+def item_counts(settings, run, rows) -> list[dict]:
     """How a run's items stand: {n, label, pill}, endings first in their usual order."""
     order = [label(ENDINGS, e) for e in ENDINGS]
-    seen = Counter(item_status(run, it) for it in rows)
+    seen = Counter(item_status(run, it, stale(settings)) for it in rows)
     return [{"n": n, "label": text, "pill": pill}
             for (text, pill), n in sorted(seen.items(), key=lambda kv: order.index(kv[0][0]) if kv[0][0] in order else len(order))]
 
@@ -64,35 +68,36 @@ def started_by(store, run) -> str:
     return show.fetch_by(fetch["scheduled_for"]) if fetch else "by hand"
 
 
-def run_row(store, run) -> dict:
-    status, pill = run_status(run)
+def run_row(settings, store, run) -> dict:
+    status, pill = run_status(run, stale(settings))
     rows, u = store.items(run["id"]), store.usage(run["id"])
     return {"id": run["id"], "flow": run["flow"], "trial": bool(run["trial"]), "started": show.when(run["started"]), "by": started_by(store, run), "status": status, "pill": pill,
-            "counts": item_counts(run, rows), "n_items": len(rows), "tokens": u["tokens"], "cost": show.cost(u),
+            "counts": item_counts(settings, run, rows), "n_items": len(rows), "tokens": u["tokens"], "cost": show.cost(u),
             "time": show.duration(show.seconds_between(run["started"], run["ended"])),
             "report": f"/runs/{run['id']}/report/index.html" if (store.path(run) / REPORT / "index.html").is_file() else ""}
 
 
-def run_rows(store, flow: str | None = None, limit: int = 50) -> list[dict]:
+def run_rows(settings, store, flow: str | None = None) -> list[dict]:
     where, args = ("WHERE flow = ?", [flow]) if flow else ("", [])
-    return [run_row(store, r) for r in store.q(f"SELECT * FROM runs {where} ORDER BY started DESC, rowid DESC LIMIT ?", *args, limit)]
+    return [run_row(settings, store, r)
+            for r in store.q(f"SELECT * FROM runs {where} ORDER BY started DESC, rowid DESC LIMIT ?", *args, settings.show["rows"])]
 
 
 def runs_view(settings, store, errors: dict) -> dict:
     """Every run of every flow. `errors` holds why a flow could not start a run; a run is started from its flow's page."""
     failed = [{"href": "/" + key, "name": key.partition("/")[2], "error": text} for key, text in errors.items() if "/" in key]
     live = installed(settings)
-    return {"runs": run_rows(store), "failed": failed, "seq": max_seq(store), "flows": live.names("flows"), "sources": live.names("sources")}
+    return {"runs": run_rows(settings, store), "failed": failed, "seq": max_seq(store), "flows": live.names("flows"), "sources": live.names("sources")}
 
 
 # ---------- one run ----------
 
-def item_row(store, run, it) -> dict:
+def item_row(settings, store, run, it) -> dict:
     last, _ = store.last_try(run["id"], it["item_id"])
     u = store.usage(run["id"], it["item_id"])
-    status, pill = item_status(run, it)
+    status, pill = item_status(run, it, stale(settings))
     spent = show.cost(u) if not it["carried_from"] else {"text": show.DASH, "tip": "carried over: nothing was spent in this run"}
-    return {"id": it["item_id"], "title": show.item_title(json.loads(it["payload"] or "{}")), "status": status, "pill": pill,
+    return {"id": it["item_id"], "title": show.item_title(json.loads(it["payload"] or "{}"), settings.show["label_chars"]), "status": status, "pill": pill,
             "stage": (last["stage"] + (f" · try {last['n']}" if last["n"] > 1 else "")) if last else "", "reason": it["reason"] or "",
             "carried_from": it["carried_from"], "tokens": u["tokens"], "cost": spent,
             "time": show.duration(show.seconds_between(it["claimed_at"], it["ended_at"])) if it["claimed_at"] else "",
@@ -116,14 +121,14 @@ def run_graph(settings, store, run, flow: dict, status: str) -> tuple[dict, list
     if (store.path(run) / REPORT / "index.html").is_file():
         stats[":end"] = {"state": "done", "lines": ["written"], "href": f"/runs/{run['id']}/report/index.html"}
     try:
-        source = run_plugins(store, run).source(flow.get("source") or "")
+        source = run_plugins(settings, store, run).source(flow.get("source") or "")
     except Exception:
         source = None
     exists = (settings.plugins / "flows" / run["flow"] / "flow.yaml").is_file()
     rows = [{"id": s["id"], "by": f"agent {s['agent']}" if "agent" in s else f"script {s['run']}" if "run" in s else stage_by(s),
              "passed": done[s["id"]]["passed"] if s["id"] in done else 0, "tries": done[s["id"]]["tries"] if s["id"] in done else 0, "now": at[s["id"]]}
             for s in flow.get("stages") or [] if isinstance(s, dict) and "id" in s]
-    return draw.graph(flow, source, stats, base=f"/flows/{run['flow']}" if exists else None), rows
+    return draw.graph(flow, settings.limits_for(flow), source, stats, base=f"/flows/{run['flow']}" if exists else None), rows
 
 
 def dress(tr: dict) -> dict:
@@ -141,8 +146,8 @@ def run_view(settings, store, run_id: str, tab: str = "items", span: str = "", e
     run = store.run(run_id)
     if run is None or tab not in RUN_TABS:
         return None
-    flow = flow_of(store, run)
-    v = run_row(store, run)
+    flow = flow_of(settings, store, run)
+    v = run_row(settings, store, run)
     status = v["status"]
     v.update({"tab": tab, "live": status in LIVE, "can_resume": status == "interrupted", "can_cancel": status in ("running", "interrupted"),
               "source": run["source"], "cap": f"${settings.limits_for(flow)['cost_per_run_usd']:.2f}",
@@ -150,11 +155,11 @@ def run_view(settings, store, run_id: str, tab: str = "items", span: str = "", e
               "flow_exists": (settings.plugins / "flows" / run["flow"] / "flow.yaml").is_file(),
               "retry_of": run["retry_of"], "retry_item": run["retry_item"], "from_stage": run["from_stage"], "error": error, "seq": max_seq(store)})
     if tab == "items":
-        v["items"] = [item_row(store, run, it) for it in store.items(run_id)]
+        v["items"] = [item_row(settings, store, run, it) for it in store.items(run_id)]
         v["retries"] = [{"run": r["id"], "item": r["retry_item"], "from_stage": r["from_stage"]}
                         for r in store.q("SELECT id, retry_item, from_stage FROM runs WHERE retry_of = ? ORDER BY started", run_id)]
     elif tab == "trace":
-        tr = tracing.build(store, run, live=status in WORKING, calls=False)
+        tr = tracing.build(store, run, settings.show, live=status in WORKING, calls=False)
         for s in tr["root"]["children"]:
             if s["kind"] == "item":
                 s["href"] = f"/runs/{run_id}/items/{s['name']}/trace"
@@ -186,10 +191,10 @@ def item_view(settings, store, run_id: str, item_id: str, tab: str = "output", s
     if it is None or tab not in ITEM_TABS:
         return None
     origin = (store.run(it["carried_from"]) if it["carried_from"] else None) or run
-    row = item_row(store, run, it)
-    work = item_row(store, origin, store.item(origin["id"], item_id) or it) if origin is not run else row  # the numbers of the run that did the work
+    row = item_row(settings, store, run, it)
+    work = item_row(settings, store, origin, store.item(origin["id"], item_id) or it) if origin is not run else row  # the numbers of the run that did the work
     folder = store.path(it)
-    working = run_status(origin)[0] in WORKING and not it["ended_at"]
+    working = run_status(origin, stale(settings))[0] in WORKING and not it["ended_at"]
     v = {"run": run_id, "origin": origin["id"], "id": item_id, "tab": tab, "title": row["title"], "status": row["status"], "pill": row["pill"],
          "ended_as": it["ended_as"], "reason": it["reason"] or "", "carried_from": it["carried_from"],
          "carried": {"status": work["status"], "pill": work["pill"]} if it["carried_from"] else None,
@@ -197,18 +202,18 @@ def item_view(settings, store, run_id: str, item_id: str, tab: str = "output", s
          "retry_from": retry_from(settings, store, run, it), "retry_of": origin["retry_of"], "from_stage": origin["from_stage"],
          "retries": [{"run": r["id"], "from_stage": r["from_stage"]}
                      for r in store.q("SELECT id, from_stage FROM runs WHERE retry_of = ? AND retry_item = ? ORDER BY started", origin["id"], item_id)],
-         "live": run_status(origin)[0] in LIVE and not it["ended_at"], "seq": max_seq(store)}
+         "live": run_status(origin, stale(settings))[0] in LIVE and not it["ended_at"], "seq": max_seq(store)}
     if tab == "output":
         report = folder / "report.md"
         v["report_md"] = str(report) if report.is_file() else ""
         v["report_html"] = md_to_html(report.read_text(errors="replace")) if report.is_file() else ""
     elif tab == "trace":
-        tr = tracing.build(store, origin, item_id=item_id, live=working, folder=folder if folder.is_dir() else None)
+        tr = tracing.build(store, origin, settings.show, item_id=item_id, live=working, folder=folder if folder.is_dir() else None)
         v["trace"], v["span"] = dress(tr), span or tr["root"]["id"]
     elif tab == "files":
         tree = show.file_tree(folder, file, ENGINE_OWNED)
         v["tree"] = tree
-        v["file"] = show.file_preview(folder, file or show.first_file(tree, ("report.md",)), f"/runs/{run_id}/items/{item_id}/files")
+        v["file"] = show.file_preview(folder, file or show.first_file(tree, ("report.md",)), f"/runs/{run_id}/items/{item_id}/files", settings.show["file_chars"])
     else:
-        v["who"] = stage_who(flow_of(store, origin))
+        v["who"] = stage_who(flow_of(settings, store, origin))
     return v

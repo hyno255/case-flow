@@ -7,7 +7,6 @@ from ..status import cost_text
 from ..trace import seconds_text
 
 DASH = "—"          # a value that is not known or does not apply; the cell's tooltip says which
-PREVIEW_CAP = 100_000
 HIDDEN = ("__pycache__",)
 
 
@@ -56,9 +55,9 @@ def cost(u: dict, not_recorded: str = "cost was not recorded for this run") -> d
     return {"text": text if u["cost_usd"] >= 0.00005 else "< $0.0001", "tip": "estimated from the price table"}
 
 
-def item_title(payload: dict) -> str:
-    """A short line for an item from whatever the source sent: the first two short text values after the id."""
-    texts = [str(v) for k, v in payload.items() if k != "id" and isinstance(v, str) and len(v) <= 40]
+def item_title(payload: dict, chars: int) -> str:
+    """A short line for an item from whatever the source sent: the first two text values after the id that are at most `chars` long."""
+    texts = [str(v) for k, v in payload.items() if k != "id" and isinstance(v, str) and len(v) <= chars]
     return " · ".join(texts[:2])
 
 
@@ -94,8 +93,9 @@ def first_file(tree: list[dict], prefer: tuple = ()) -> str:
     return next((p for p in prefer if p in top), top[0] if top else "")
 
 
-def file_preview(folder: Path, rel: str, raw: str) -> dict | None:
-    """One file of a folder as text, or why it cannot be shown. `raw` is the address that serves the folder's files as plain text."""
+def file_preview(folder: Path, rel: str, raw: str, chars: int) -> dict | None:
+    """One file of a folder as text (its first `chars` characters), or why it cannot be shown.
+    `raw` is the address that serves the folder's files as plain text."""
     if not rel:
         return None
     try:
@@ -105,5 +105,5 @@ def file_preview(folder: Path, rel: str, raw: str) -> dict | None:
     if not target.is_file():
         return {"path": rel, "error": "no such file"}
     text = target.read_text(errors="replace")
-    return {"path": rel, "abs": str(target), "size": size_text(target.stat().st_size), "text": text[:PREVIEW_CAP], "cut": len(text) > PREVIEW_CAP,
+    return {"path": rel, "abs": str(target), "size": size_text(target.stat().st_size), "text": text[:chars], "cut": len(text) > chars,
             "raw": f"{raw}/{rel}"}

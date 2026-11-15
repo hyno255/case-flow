@@ -77,8 +77,8 @@ class Recovery(Home):
         self.assertIsNone(run["ended"])
 
         # at first the run still looks alive; once it has been quiet long enough it is shown as interrupted
-        self.assertEqual(run_status(run)[0], "running")
-        self.assertEqual(sweep(self.store), [])
+        self.assertEqual(run_status(run, self.stale)[0], "running")
+        self.assertEqual(sweep(self.store, self.stale), [])
         self.assertEqual(sweep(self.store, stale_after=0), [run_id])
         self.assertEqual(sweep(self.store, stale_after=0), [])  # recorded once
         self.assertEqual(self.tries(run_id, "SEC-1042", "analyse"), [(1, "rejected"), (2, "interrupted")])
@@ -108,7 +108,7 @@ class Recovery(Home):
         # the report is written once, after the resume, with the finished result
         self.assertEqual(self.store.one("SELECT COUNT(*) n FROM events WHERE run_id = ? AND type = 'report_rendered'", run_id)["n"], 1)
         run = self.store.one("SELECT * FROM runs WHERE id = ?", run_id)
-        self.assertEqual(run_status(run)[0], "finished")
+        self.assertEqual(run_status(run, self.stale)[0], "finished")
         self.assertIn("2 triaged, 2 need a person", (self.store.path(run) / "report/index.html").read_text())
         with self.assertRaisesRegex(ValueError, "has finished"):
             claim_resume(self.store, run_id, stale_after=0)
@@ -124,9 +124,9 @@ class Recovery(Home):
                 await asyncio.sleep(0.05)
             run_id = self.store.one("SELECT id FROM runs")["id"]
             with self.assertRaisesRegex(ValueError, "still running"):  # a live run cannot be taken over
-                claim_resume(self.store, run_id)
-            self.assertEqual(request_cancel(self.store, run_id), "asked")
-            self.assertEqual(run_status(self.store.one("SELECT * FROM runs"))[0], "stopping")
+                claim_resume(self.store, run_id, self.stale)
+            self.assertEqual(request_cancel(self.store, run_id, self.stale), "asked")
+            self.assertEqual(run_status(self.store.one("SELECT * FROM runs"), self.stale)[0], "stopping")
             await task  # the hold is still in place: the gate scripts are stopped, not waited for
             return run_id
 
@@ -141,10 +141,10 @@ class Recovery(Home):
         self.assertIn("gate.sh", items["SEC-1042"]["reason"])
         self.assertEqual(self.tries(run_id, "SEC-1042", "analyse")[-1], (2, "cancelled"))
         self.assertEqual(self.tries(run_id, "SEC-1042", "fix"), [])
-        self.assertEqual(run_status(self.store.one("SELECT * FROM runs"))[0], "cancelled")
+        self.assertEqual(run_status(self.store.one("SELECT * FROM runs"), self.stale)[0], "cancelled")
         self.assertTrue((self.store.path(self.items(run_id)["SEC-1042"]) / "origin.md").is_file())  # folders are kept
         with self.assertRaisesRegex(ValueError, "already finished"):
-            request_cancel(self.store, run_id)
+            request_cancel(self.store, run_id, self.stale)
 
         # a run whose process is gone can be closed without resuming it
         self.hold.write_text("")
@@ -198,14 +198,14 @@ class Recovery(Home):
         async def stopped_by(**how):
             child.unlink(missing_ok=True)
             started = time.time()
-            code, _ = await run_proc([str(script)], self.home, **how)
+            code, _ = await run_proc([str(script)], self.home, **{**self.settings.proc(), **how})
             self.assertLess(time.time() - started, 8)
             self.assertFalse(child_alive())
             return code
 
         async def cancelled_task():
             child.unlink(missing_ok=True)
-            task = asyncio.create_task(run_proc([str(script)], self.home))
+            task = asyncio.create_task(run_proc([str(script)], self.home, **self.settings.proc()))
             while not child.is_file() or not child.read_text().strip():
                 await asyncio.sleep(0.05)
             self.assertTrue(child_alive())
@@ -219,7 +219,7 @@ class Recovery(Home):
         self.assert_scripts_gone(within=0)
         # an ordinary script is not disturbed: its output and its exit code come back
         script.write_text('#!/bin/sh\ncat\necho " and out" >&2\nexit 3\n')
-        self.assertEqual(asyncio.run(run_proc([str(script)], self.home, stdin="in")), (3, "in and out"))
+        self.assertEqual(asyncio.run(run_proc([str(script)], self.home, stdin="in", **self.settings.proc())), (3, "in and out"))
 
     def test_retry_one_item_from_a_stage(self):
         run_id = asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))

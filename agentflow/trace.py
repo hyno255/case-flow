@@ -19,7 +19,6 @@ FIXED = ("seq", "ts", "run", "item", "stage", "type")  # the fields every event 
 USE = ("tokens_in", "tokens_out", "cost", "model_calls", "tool_calls")  # added up from the calls into every span above them
 PARTS = ("agent", "script", "check", "review")
 RUN_MARKS = {"report_rendered": "report written", "run_interrupted": "interrupted", "run_resumed": "resumed", "cancel_requested": "cancel asked for"}
-PROMPT_CAP = 20_000
 
 
 def epoch(iso: str | None) -> float | None:
@@ -44,7 +43,7 @@ def _span(kind: str, name: str, start: float, end: float | None = None, **extra)
             "model_calls": 0, "tool_calls": 0, **extra}
 
 
-def _text(value, cap: int = 4000) -> str:
+def _text(value, cap: int) -> str:
     """What a call was given or answered, as text. JSON is laid out so it can be read."""
     if isinstance(value, str):
         try:
@@ -55,10 +54,11 @@ def _text(value, cap: int = 4000) -> str:
     return text if len(text) <= cap else text[:cap] + " …"
 
 
-def build(store, run, item_id: str | None = None, live: bool = False, calls: bool = True, folder: Path | None = None) -> dict:
-    """The span tree for a run, or for one item of it. `live` says the run's process is still working, so open spans
+def build(store, run, show: dict, item_id: str | None = None, live: bool = False, calls: bool = True, folder: Path | None = None) -> dict:
+    """The span tree for a run, or for one item of it. `show` is the settings' `show` section: how much text a span carries. `live` says the run's process is still working, so open spans
     end now. With calls=False the tree stops at the parts of a try, which keeps a run page of many items small.
     `folder` is the item's work folder: with it, an agent's span carries the prompt its try was told."""
+    block = show["block_chars"]
     events = store.events(run["id"], item_id, run_level=True)
     outcomes = {(a["item_id"], a["stage"], a["n"]): a["outcome"] for a in store.q("SELECT item_id, stage, n, outcome FROM attempts WHERE run_id = ?", run["id"])}
     now = time.time()
@@ -79,7 +79,7 @@ def build(store, run, item_id: str | None = None, live: bool = False, calls: boo
                 ended = ts
             elif item_id is None:
                 m = _span("mark", RUN_MARKS.get(t, t.replace("_", " ")), ts, ts)
-                m["facts"] = [(k, _text(v, 400)) for k, v in d.items() if k not in FIXED and v not in ("", None)]
+                m["facts"] = [(k, _text(v, show["fact_chars"])) for k, v in d.items() if k not in FIXED and v not in ("", None)]
                 marks.append(m)
             continue
         it = items.setdefault(d["item"], _span("item", d["item"], ts, stages={}, last=ts, ended_as=None))
@@ -125,12 +125,12 @@ def build(store, run, item_id: str | None = None, live: bool = False, calls: boo
                 rel = prompt_file(d["stage"], n)
                 told = folder / rel if folder else None
                 if told and told.is_file():
-                    ex["blocks"].append((f"prompt · {rel}", told.read_text(errors="replace")[:PROMPT_CAP]))
+                    ex["blocks"].append((f"prompt · {rel}", told.read_text(errors="replace")[:show["prompt_chars"]]))
                 else:
                     ex["facts"].append(("prompt", rel))
         elif t == "tool_call":
             c = _span("tool", d.get("tool", "tool"), ts, who=d.get("agent") or "", tool_calls=1)
-            c["blocks"].append(("arguments", _text(d.get("args", ""))))
+            c["blocks"].append(("arguments", _text(d.get("args", ""), block)))
             part(d.get("role"))["children"].append(c)
             tr["open"].setdefault(d["call"], []).append(c)
         elif t == "tool_result":
@@ -140,7 +140,7 @@ def build(store, run, item_id: str | None = None, live: bool = False, calls: boo
                 c["end"] = ts
                 c["facts"].append(("answer", f"{d.get('chars', 0):,} characters"))
                 if d.get("preview"):
-                    c["blocks"].append(("answer", _text(d["preview"])))
+                    c["blocks"].append(("answer", _text(d["preview"], block)))
         elif t == "model_call":
             at, price = d.get("started"), d.get("cost_usd")
             c = _span("model", "model call", at or ts, (at + d.get("seconds", 0)) if at else ts, who=d.get("agent") or "", model=d.get("model") or "",
@@ -155,10 +155,10 @@ def build(store, run, item_id: str | None = None, live: bool = False, calls: boo
                 ex["state"] = "ok" if d["exit_code"] in (0, DONE_EARLY) else "bad"
                 ex["facts"].append(("exit code", str(d["exit_code"])))
                 if d.get("output"):
-                    ex["blocks"].append(("output", _text(d["output"])))
+                    ex["blocks"].append(("output", _text(d["output"], block)))
             elif d.get("error"):
                 ex["state"] = "bad"
-                ex["blocks"].append(("error", _text(d["error"])))
+                ex["blocks"].append(("error", _text(d["error"], block)))
             else:
                 ex["state"] = "ok"
         elif t == "verdict":
@@ -177,9 +177,9 @@ def build(store, run, item_id: str | None = None, live: bool = False, calls: boo
             ph["note"] = "pass" if d.get("passed") else "asked for a person" if d.get("needs_person") else "fail"
             ph["facts"].append(("verdict", ph["note"]))
             if d.get("reason"):
-                ph["blocks"].append(("output" if ph["kind"] == "check" else "reason", _text(d["reason"])))
+                ph["blocks"].append(("output" if ph["kind"] == "check" else "reason", _text(d["reason"], block)))
         elif t == "person_asked":
-            tr["blocks"].append(("asked for a person", _text(d.get("reason", ""))))
+            tr["blocks"].append(("asked for a person", _text(d.get("reason", ""), block)))
         elif t in ("attempt_interrupted", "attempt_cancelled"):
             tr["facts"].append(("cut short", "the process stopped" if t == "attempt_interrupted" else f"{d.get('script', 'a script')} was stopped: the run was cancelled"))
 

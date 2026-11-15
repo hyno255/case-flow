@@ -18,16 +18,11 @@ from dataclasses import dataclass
 
 END = "end"
 VALIDATION = ("check", "done_when", "review")  # the keys that give a stage something that can fail
-DEFAULT_TRIES, MAX_TRIES = 2, 5
 
 
 def stage_by(stage: dict) -> str:
     """Who does a stage: a script, a named agent, or the default agent following the stage's own file."""
     return "script" if "run" in stage else stage.get("agent", "default agent")
-
-
-def stage_tries(stage: dict) -> int:
-    return stage.get("tries", DEFAULT_TRIES)
 
 
 def validated(stage: dict) -> bool:
@@ -45,6 +40,10 @@ class Edge:
 class Graph:
     stages: dict[str, dict]  # by id, in the order written
     edges: list[Edge]
+    default_tries: int       # for a stage that names no `tries`: the flow's limit
+
+    def tries(self, stage: str) -> int:
+        return self.stages[stage].get("tries", self.default_tries)
 
     @property
     def order(self) -> list[str]:
@@ -70,7 +69,7 @@ class Graph:
         stage = last["stage"]
         if last["outcome"] == "passed":
             return self.after(stage)
-        if last["outcome"] == "rejected" and rejected < stage_tries(self.stages[stage]):
+        if last["outcome"] == "rejected" and rejected < self.tries(stage):
             return self.after(stage, "fail")
         return stage  # cut short, failed, asked for a person, or out of tries: this stage again
 
@@ -79,8 +78,9 @@ class Graph:
         return self.order[:self.order.index(stage)] if stage in self.stages else []
 
 
-def compile_flow(flow: dict) -> tuple[Graph, list[str]]:
-    """(graph, errors). The graph is usable only when there are no errors."""
+def compile_flow(flow: dict, limits: dict) -> tuple[Graph, list[str]]:
+    """(graph, errors). The graph is usable only when there are no errors. `limits` are the ones the flow runs under:
+    `tries` for a stage that names none, and `max_tries`, the most a stage may ask for."""
     errs: list[str] = []
     stages: dict[str, dict] = {}
     for s in flow.get("stages") or []:
@@ -108,9 +108,10 @@ def compile_flow(flow: dict) -> tuple[Graph, list[str]]:
                 errs.append(f"stage {sid}: on_fail names '{back}', which is not a stage")
                 back = sid
             edges.append(Edge(sid, back, "fail"))
-        if not isinstance(stage_tries(s), int) or not 1 <= stage_tries(s) <= MAX_TRIES:
-            errs.append(f"stage {sid}: 'tries' must be a number from 1 to {MAX_TRIES}")
-    graph = Graph(stages, edges)
+        tries = s.get("tries", limits["tries"])
+        if isinstance(tries, bool) or not isinstance(tries, int) or not 1 <= tries <= limits["max_tries"]:
+            errs.append(f"stage {sid}: 'tries' must be a number from 1 to {limits['max_tries']}")
+    graph = Graph(stages, edges, limits["tries"])
     if not stages:
         return graph, errs + ["the flow has no stages"]
 

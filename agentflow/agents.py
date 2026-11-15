@@ -19,9 +19,6 @@ from pydantic_ai.usage import UsageLimits  # noqa: E402
 from .layout import confined, visible_files  # noqa: E402
 from .procs import run_proc  # noqa: E402
 
-MAX_MODEL_CALLS = 20  # per agent run; a run that needs more is stuck
-PREVIEW = 600  # characters of a tool's answer kept in its event, for the trace and the log
-
 DEFAULT_AGENT = (
     "You carry out one stage of a flow. The stage's method is below; follow it exactly. "
     "Read what you need from the work folder and write your result there. "
@@ -50,7 +47,7 @@ class ModelNotReady(Exception):
 
 # ---------- tools an agent may be handed ----------
 
-def file_tools(work: Path, can_write: bool) -> list[Tool]:
+def file_tools(work: Path, can_write: bool, limits: dict) -> list[Tool]:
     def list_files() -> list[str]:
         """List the files in the work folder."""
         return visible_files(work)
@@ -58,7 +55,7 @@ def file_tools(work: Path, can_write: bool) -> list[Tool]:
     def read_file(path: str) -> str:
         """Read a text file from the work folder."""
         try:
-            return confined(work, path).read_text()[:20000]
+            return confined(work, path).read_text()[:limits["read_chars"]]
         except (ValueError, OSError) as e:
             return f"error: {e}"
 
@@ -75,8 +72,10 @@ def file_tools(work: Path, can_write: bool) -> list[Tool]:
     return [Tool(list_files), Tool(read_file)] + ([Tool(write_file)] if can_write else [])
 
 
-def plugin_tool(registry, name: str, work: Path, env: dict):
-    """A tool plugin as an agent gets it: one function from its script, or every tool of its MCP server."""
+def plugin_tool(settings, registry, name: str, work: Path, env: dict, limits: dict | None = None):
+    """A tool plugin as an agent gets it: one function from its script, or every tool of its MCP server.
+    `limits` are the flow's; without them the platform's apply."""
+    limits = limits or settings.limits
     spec, folder = registry.tool(name), registry.dir("tools", name)
     if "mcp" in spec:  # arguments that name a file of the plugin are given as that file's full path
         return McpTool(name, [str((folder / a).resolve()) if (folder / a).is_file() else str(a) for a in spec["mcp"]], work, env)
@@ -84,8 +83,8 @@ def plugin_tool(registry, name: str, work: Path, env: dict):
     exe = str((folder / spec["run"]).resolve())
 
     async def call(**kw) -> str:  # stopped with the try, when the item runs out of time or the engine stops
-        code, out = await run_proc([exe] + [str(kw[a]) for a in args], cwd=work, env=env)
-        return out[-8000:] if code == 0 else f"tool failed with exit code {code}: {out[-2000:]}"
+        code, out = await run_proc([exe] + [str(kw[a]) for a in args], cwd=work, env=env, **settings.proc(limits))
+        return out[-limits["tool_chars"]:] if code == 0 else f"tool failed with exit code {code}: {out[-limits['reason_chars']:]}"
 
     schema = {"type": "object", "properties": {a: {"type": "string"} for a in args}, "required": args, "additionalProperties": False}
     return Tool.from_schema(call, name=name, description=spec["description"], json_schema=schema)
@@ -108,9 +107,9 @@ class McpTool:
         """The server's tools for one agent run."""
         return self._server().prefixed(self.name)
 
-    async def offered(self) -> list[str]:
-        """Start the server, ask which tools it has, stop it. This is its health check."""
-        async with self._server(init_timeout=15) as server:
+    async def offered(self, seconds: float) -> list[str]:
+        """Start the server, ask which tools it has, stop it. This is its health check; `seconds` is how long the server may take to start."""
+        async with self._server(init_timeout=seconds) as server:
             return [t.name for t in await server.list_tools()]
 
 
@@ -157,8 +156,11 @@ def build_model(settings, spec=None):
     return OpenAIChatModel(m["name"], provider=provider, settings=OpenAIChatModelSettings(openai_reasoning_effort=effort))
 
 
-async def run_agent(settings, instructions: str, prompt: str, tools: list, output_type=str, on_event=lambda *a, **k: None, model=None):
-    """One agent run on the model picked for it. Tool calls are reported through on_event while the agent is still working."""
+async def run_agent(settings, instructions: str, prompt: str, tools: list, output_type=str, on_event=lambda *a, **k: None, model=None,
+                    limits: dict | None = None):
+    """One agent run on the model picked for it. Tool calls are reported through on_event while the agent is still working.
+    `limits` are the flow's (model_calls, event_chars); without them the platform's apply."""
+    limits = limits or settings.limits
     free = settings.stand_in  # the stand-in costs nothing, which is known, not unknown
 
     def price(usage) -> float | None:
@@ -177,7 +179,7 @@ async def run_agent(settings, instructions: str, prompt: str, tools: list, outpu
                 text = str(ev.part.content)
                 took = time.time() - calls.pop(ev.part.tool_call_id, time.time())
                 on_event("tool_result", tool=ev.part.tool_name, chars=len(text), call=ev.part.tool_call_id, seconds=round(took, 3),
-                         preview=text[:PREVIEW])
+                         preview=text[:limits["event_chars"]])
             elif type(ev).__name__.startswith(("Part", "FinalResult")):  # parts of a model's answer; a structured
                 model = True                                             # result is handled in a round of its own
         if model:
@@ -186,7 +188,7 @@ async def run_agent(settings, instructions: str, prompt: str, tools: list, outpu
     started = time.time()
     agent = Agent(build_model(settings, model), instructions=instructions, tools=[t for t in tools if isinstance(t, Tool)],
                   toolsets=[t.toolset() for t in tools if isinstance(t, McpTool)], output_type=output_type)  # an MCP server lives for this run only
-    result = await agent.run(prompt, event_stream_handler=stream, usage_limits=UsageLimits(request_limit=MAX_MODEL_CALLS))
+    result = await agent.run(prompt, event_stream_handler=stream, usage_limits=UsageLimits(request_limit=limits["model_calls"]))
     tool_calls = 0
     responses = [m for m in result.new_messages() if isinstance(m, ModelResponse)]
     timed = iter(requests if len(requests) == len(responses) else [])  # only when the two lists line up

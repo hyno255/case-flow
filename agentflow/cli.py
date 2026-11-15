@@ -34,47 +34,50 @@ def money(u: dict) -> str:
     return cost_text(u, " estimated", "cost unknown")
 
 
-def live_printer(event: dict) -> None:
-    """One line per thing worth watching, as it happens."""
-    t, who = event["type"], f"{event.get('item') or '':<9} {event.get('stage') or '':<8}"
-    if t == "attempt_started":
-        print(f"{who} try {event['n']}  {event['by']}" + ("  (with feedback)" if event.get("feedback") else ""), flush=True)
-    elif t == "tool_call":
-        args = event["args"] if isinstance(event["args"], str) else json.dumps(event["args"])
-        print(f"{who}   {'reviewer ' if event.get('role') else ''}tool {event['tool']} {args[:70]}", flush=True)
-    elif t == "verdict":
-        print(f"{who}   {event['by']}: {'pass' if event['passed'] else 'FAIL'}  {event['reason'][:160]}", flush=True)
-    elif t == "person_asked":
-        print(f"{who}   asked for a person: {event['reason'][:200]}", flush=True)
-    elif t == "attempt_cancelled":
-        print(f"{who} try {event['n']} was cancelled: {event['script']} was stopped", flush=True)
-    elif t == "attempt_interrupted":
-        print(f"{who} try {event['n']} was interrupted: the process stopped", flush=True)
-    elif t == "run_interrupted":
-        print(f"run       interrupted: {event['reason']}", flush=True)
-    elif t == "run_resumed":
-        print(f"run       resumed for {', '.join(event['items']) or 'no items'}", flush=True)
-    elif t == "item_started" and event.get("from_stage"):
-        print(f"{event['item']:<9} continues at {event['from_stage']}; earlier stages are kept", flush=True)
-    elif t == "item_carried_over":
-        print(f"{who} carried over from {event['from_run']}", flush=True)
-    elif t == "item_ended":
-        print(f"{event['item']:<9} ended: {event['ended_as']}" + (f"  ({event['reason'][:160]})" if event.get("reason") else ""), flush=True)
+def live_printer(line: int):
+    """A printer of one line per thing worth watching, as it happens. `line` is how much of a value a line shows (show.line_chars)."""
+    def show(event: dict) -> None:
+        t, who = event["type"], f"{event.get('item') or '':<9} {event.get('stage') or '':<8}"
+        if t == "attempt_started":
+            print(f"{who} try {event['n']}  {event['by']}" + ("  (with feedback)" if event.get("feedback") else ""), flush=True)
+        elif t == "tool_call":
+            args = event["args"] if isinstance(event["args"], str) else json.dumps(event["args"])
+            print(f"{who}   {'reviewer ' if event.get('role') else ''}tool {event['tool']} {args[:line]}", flush=True)
+        elif t == "verdict":
+            print(f"{who}   {event['by']}: {'pass' if event['passed'] else 'FAIL'}  {event['reason'][:line]}", flush=True)
+        elif t == "person_asked":
+            print(f"{who}   asked for a person: {event['reason'][:line]}", flush=True)
+        elif t == "attempt_cancelled":
+            print(f"{who} try {event['n']} was cancelled: {event['script']} was stopped", flush=True)
+        elif t == "attempt_interrupted":
+            print(f"{who} try {event['n']} was interrupted: the process stopped", flush=True)
+        elif t == "run_interrupted":
+            print(f"run       interrupted: {event['reason']}", flush=True)
+        elif t == "run_resumed":
+            print(f"run       resumed for {', '.join(event['items']) or 'no items'}", flush=True)
+        elif t == "item_started" and event.get("from_stage"):
+            print(f"{event['item']:<9} continues at {event['from_stage']}; earlier stages are kept", flush=True)
+        elif t == "item_carried_over":
+            print(f"{who} carried over from {event['from_run']}", flush=True)
+        elif t == "item_ended":
+            print(f"{event['item']:<9} ended: {event['ended_as']}" + (f"  ({event['reason'][:line]})" if event.get("reason") else ""), flush=True)
+
+    return show
 
 
-def print_run(store: Store, run_id: str, item_id: str | None = None) -> int:
-    run = store.need_run(run_id)
+def print_run(settings, store: Store, run_id: str, item_id: str | None = None) -> int:
+    run, stale, line = store.need_run(run_id), settings.engine["stale_after_seconds"], settings.show["line_chars"]
     u = store.usage(run_id)
     retry = f" · retry of {run['retry_item']} in {run['retry_of']} from {run['from_stage']}" if run["retry_of"] else ""
-    print(f"\n{'trial' if run['trial'] else 'run'} {run_id} · {run['flow']} · {run_status(run)[0]}{retry} · plugins {run['snapshot']} · {u['tokens']:,} tokens · {money(u)}")
+    print(f"\n{'trial' if run['trial'] else 'run'} {run_id} · {run['flow']} · {run_status(run, stale)[0]}{retry} · plugins {run['snapshot']} · {u['tokens']:,} tokens · {money(u)}")
     for it in store.items(run_id):
         if item_id and it["item_id"] != item_id:
             continue
         iu = store.usage(run_id, it["item_id"])
         extra = f"from {it['carried_from']}" if it["carried_from"] else f"{iu['tool_calls']} tool calls · {iu['tokens']:,} tokens · {money(iu)} · {iu['seconds']:.0f}s"
-        print(f"\n{it['item_id']:<9} {item_status(run, it)[0]:<15} {extra}")
+        print(f"\n{it['item_id']:<9} {item_status(run, it, stale)[0]:<15} {extra}")
         if it["reason"]:
-            print(f"{'':<9} {it['reason'][:300]}")
+            print(f"{'':<9} {it['reason'][:line]}")
         for s in store.q("SELECT stage, MIN(by) by, COUNT(*) tries FROM attempts WHERE run_id = ? AND item_id = ? GROUP BY stage ORDER BY MIN(id)", run_id, it["item_id"]):
             su = store.usage(run_id, it["item_id"], s["stage"])
             print(f"  {s['stage']:<8} {s['by']:<15} tries {s['tries']}  {su['tool_calls']:>2} tool calls  {su['tokens']:>7,} tokens  {money(su):<18} {su['seconds']:.1f}s")
@@ -82,26 +85,26 @@ def print_run(store: Store, run_id: str, item_id: str | None = None) -> int:
     return 0
 
 
-def print_runs(store: Store) -> int:
-    for run in store.q("SELECT * FROM runs ORDER BY started DESC, rowid DESC LIMIT 20"):
+def print_runs(settings, store: Store) -> int:
+    for run in store.q("SELECT * FROM runs ORDER BY started DESC, rowid DESC LIMIT ?", settings.show["rows"]):
         ends = store.q("SELECT COALESCE(ended_as,'not finished') e, COUNT(*) n FROM items WHERE run_id = ? GROUP BY e", run["id"])
-        print(f"{run['id']}  {run['flow']:<16} {run['started']}  {'trial · ' if run['trial'] else ''}{run_status(run)[0]} · "
+        print(f"{run['id']}  {run['flow']:<16} {run['started']}  {'trial · ' if run['trial'] else ''}{run_status(run, settings.engine['stale_after_seconds'])[0]} · "
               f"{', '.join(f'{x['n']} {x['e']}' for x in ends)} · {money(store.usage(run['id']))}")
     return 0
 
 
-def follow(store: Store, run_id: str) -> None:
+def follow(settings, store: Store, run_id: str) -> None:
     """Print a run's events from the first one, then as they come, until the run ends. The same events the pages stream."""
     store.need_run(run_id)
-    seq = 0
+    seq, show = 0, live_printer(settings.show["line_chars"])
     while True:
         events = store.events(run_id, after=seq)
         for e in events:
             seq = e["seq"]
-            live_printer(e)
+            show(e)
         if any(e["type"] == "run_ended" for e in events) or (not events and store.run(run_id)["ended"]):
             return
-        time.sleep(0.5)
+        time.sleep(settings.engine["follow_seconds"])
 
 
 def cmd_check(a, settings: Settings) -> int:
@@ -144,27 +147,27 @@ def flow_model(settings, flow: str) -> str:
 
 def cmd_try(a, settings, store) -> int:
     print(f"trial · one item · {flow_model(settings, a.flow)}\n")
-    return print_run(store, asyncio.run(try_flow(settings, store, a.flow, a.item)))
+    return print_run(settings, store, asyncio.run(try_flow(settings, store, a.flow, a.item)))
 
 
 def cmd_run(a, settings, store) -> int:
     print(f"{a.flow} · {flow_model(settings, a.flow)}\n")
-    return print_run(store, asyncio.run(start_flow(settings, store, a.flow, force=a.force)))
+    return print_run(settings, store, asyncio.run(start_flow(settings, store, a.flow, force=a.force)))
 
 
 def cmd_resume(a, settings, store) -> int:
     print(f"resuming {a.run} · finished stages are kept{STAND_IN if settings.stand_in else ''}\n")
-    return print_run(store, asyncio.run(resume_run(settings, store, a.run)))
+    return print_run(settings, store, asyncio.run(resume_run(settings, store, a.run)))
 
 
 def cmd_retry(a, settings, store) -> int:
     new = prepare_retry(settings, store, a.run, a.item)
     print(f"retry of {a.item} from stage {store.run(new)['from_stage']}, as run {new}{STAND_IN if settings.stand_in else ''}\n")
-    return print_run(store, asyncio.run(run_retry(settings, store, new)))
+    return print_run(settings, store, asyncio.run(run_retry(settings, store, new)))
 
 
 def cmd_cancel(a, settings, store) -> int:
-    how = request_cancel(store, a.run)
+    how = request_cancel(store, a.run, settings.engine["stale_after_seconds"])
     print(f"{a.run}: " + ("asked to stop; running scripts are stopped now, and an agent finishes its try first" if how == "asked" else "closed; its process had already stopped"))
     return 0
 
@@ -192,10 +195,10 @@ def cmd_serve(a, settings, store) -> int:
 
 def cmd_show(a, settings, store) -> int:
     if a.run is None:
-        return print_runs(store)
+        return print_runs(settings, store)
     if a.follow:
-        follow(store, a.run)
-    return print_run(store, a.run, a.item)
+        follow(settings, store, a.run)
+    return print_run(settings, store, a.run, a.item)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -242,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     store = Store(settings.data)
     settings.stand_in = getattr(a, "stand_in", False)
     if a.watch:
-        store.listeners.append(live_printer)  # one line per thing worth watching, as the run goes
+        store.listeners.append(live_printer(settings.show["line_chars"]))  # one line per thing worth watching, as the run goes
     try:
         return a.fn(a, settings, store)
     except (FetchFailed, ModelNotReady, ValueError) as e:

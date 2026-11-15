@@ -15,11 +15,9 @@ import subprocess
 import sys
 import threading
 
-GRACE = 2.0  # seconds a script gets to end by itself after being asked
-
 
 def main() -> None:
-    fd, argv = int(sys.argv[1]), sys.argv[2:]
+    fd, grace, argv = int(sys.argv[1]), float(sys.argv[2]), sys.argv[3:]  # grace: seconds a script gets to end by itself after being asked
     try:
         child = subprocess.Popen(argv)  # same group, same stdin and output as this process
     except OSError as e:
@@ -42,7 +40,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)  # the request below is for the script, not for this process
     os.killpg(os.getpgrp(), signal.SIGTERM)
     try:
-        child.wait(timeout=GRACE)
+        child.wait(timeout=grace)
     except subprocess.TimeoutExpired:
         pass
     os.killpg(os.getpgrp(), signal.SIGKILL)  # whatever is left, this process included

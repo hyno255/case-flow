@@ -5,8 +5,6 @@ cannot say different things about the same run.
 """
 import time
 
-STALE_AFTER = 60.0  # a run with no sign of life for this long is treated as interrupted; generous on purpose
-
 # name: (label, pill on a page, bar in the trace)
 ENDINGS = {  # how an item can end
     "done": ("done", "done", "ok"), "needs_person": ("needs a person", "hold", "hold"), "failed": ("failed", "bad", "bad"),
@@ -23,25 +21,26 @@ def label(table: dict, name: str | None) -> str:
     return table[name][0] if name in table else (name or "").replace("_", " ")
 
 
-def is_stale(run) -> bool:
-    """True when a run has not ended and its process has given no sign of life for STALE_AFTER seconds."""
-    return run["ended"] is None and (run["beat"] is None or time.time() - run["beat"] > STALE_AFTER)
+def is_stale(run, stale_after: float) -> bool:
+    """True when a run has not ended and its process has given no sign of life for `stale_after` seconds
+    (engine.stale_after_seconds in the settings; generous on purpose)."""
+    return run["ended"] is None and (run["beat"] is None or time.time() - run["beat"] > stale_after)
 
 
-def run_status(run) -> tuple[str, str]:
+def run_status(run, stale_after: float) -> tuple[str, str]:
     """(label, pill). From three facts: an ending, a cancel request, and the last sign of life."""
     if run["ended"]:
         return ("cancelled", "wait") if run["cancel_requested"] else ("finished", "done")
-    if is_stale(run):
+    if is_stale(run, stale_after):
         return "interrupted", "bad"
     return ("stopping", "hold") if run["cancel_requested"] else ("running", "run")
 
 
-def item_status(run, item) -> tuple[str, str]:
+def item_status(run, item, stale_after: float) -> tuple[str, str]:
     """(label, pill) for one item of a run."""
     if item["ended_as"]:
         return label(ENDINGS, item["ended_as"]), ENDINGS.get(item["ended_as"], ("", "wait"))[1]
-    if is_stale(run):
+    if is_stale(run, stale_after):
         return "interrupted", "bad"
     return ("running", "run") if item["claimed_at"] else ("queued", "wait")
 

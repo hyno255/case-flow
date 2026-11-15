@@ -23,7 +23,7 @@ import yaml
 from .graph import Graph, compile_flow, stage_by
 from .layout import PLUGINS
 from .schedule import parse_schedule
-from .settings import LIMIT_KEYS
+from .settings import DEFAULTS, check_numbers
 
 SOURCE_KEYS = {"description", "run", "output", "fields"}
 TOOL_KEYS = {"description", "run", "args", "health", "mcp"}
@@ -47,7 +47,14 @@ def installed(settings) -> "Registry":
 class Registry:
     def __init__(self, root: Path, settings=None):
         self.root = Path(root)
-        self.settings = settings  # when given, model names are checked against it
+        self.settings = settings  # when given, model names are checked against it, and its limits apply
+
+    def limits_for(self, flow: dict) -> dict:
+        """The limits one flow runs under: the platform's (the packaged defaults when no settings were given), with the flow's own on top."""
+        if self.settings:
+            return self.settings.limits_for(flow)
+        own = flow.get("limits")
+        return {**DEFAULTS["limits"], **(own if isinstance(own, dict) else {})}
 
     def names(self, kind: str) -> list[str]:
         folder = self.root / kind
@@ -74,7 +81,8 @@ class Registry:
         return yaml.safe_load((self.dir("flows", name) / "flow.yaml").read_text()) or {}
 
     def graph(self, name: str) -> Graph:
-        return compile_flow(self.flow(name))[0]
+        f = self.flow(name)
+        return compile_flow(f, self.limits_for(f))[0]
 
     def flow_goal(self, name: str) -> str:
         """What the flow is for: FLOW.md, which every agent in the flow is told."""
@@ -201,13 +209,10 @@ class Registry:
                 parse_schedule(str(f["schedule"]))
             except ValueError as e:
                 errs.append(str(e))
-        if not isinstance(f.get("limits") or {}, dict):
-            errs.append(f"limits: must be a mapping of {', '.join(sorted(LIMIT_KEYS))}")
-            f["limits"] = {}
-        errs += [f"limits: unknown key '{k}'" for k in (f.get("limits") or {}) if k not in LIMIT_KEYS]
+        errs += check_numbers("limits", f.get("limits") or {})
         if not (d / "FLOW.md").is_file():
             errs.append("FLOW.md not found")
-        graph, graph_errs = compile_flow(f)  # ids, next, on_fail, tries: the flow as a graph
+        graph, graph_errs = compile_flow(f, self.limits_for(f))  # ids, next, on_fail, tries: the flow as a graph
         errs += graph_errs
         for sid, s in graph.stages.items():
             errs += [f"stage {sid}: unknown key '{k}'" for k in s if k not in STAGE_KEYS]
@@ -271,6 +276,6 @@ class Registry:
         return h.hexdigest()[:12]
 
 
-def run_plugins(store, run) -> Registry:
-    """The plugin files a run uses: its own copy, made when it started."""
-    return Registry(store.path(run) / PLUGINS)
+def run_plugins(settings, store, run) -> Registry:
+    """The plugin files a run uses: its own copy, made when it started. The limits are the platform's as they are now."""
+    return Registry(store.path(run) / PLUGINS, settings)

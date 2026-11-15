@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ..agents import ModelNotReady
-from ..health import EVERY, check_tools
+from ..health import check_tools
 from ..layout import REPORT, confined
 from ..plugins import installed
 from ..recovery import claim_resume, prepare_retry, request_cancel, resume_run, run_retry, sweep
@@ -42,6 +42,7 @@ class ScheduleRequest(BaseModel):
 
 
 def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = ("127.0.0.1", "localhost")) -> FastAPI:
+    engine, stale = settings.engine, settings.engine["stale_after_seconds"]  # the engine's timings, all from the settings
     tasks: set[asyncio.Task] = set()
     errors: dict[str, str] = {}  # the last reason something could not go on, shown on its page; keys: flows/<name>, a run id
 
@@ -64,7 +65,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
                 due.setdefault((source, slot), []).append(flow)
             for (source, slot), flows in due.items():  # flows due together on one source share one fetch
                 spawn([f"flows/{f}" for f in flows], due_together(source, flows, slot))
-            await asyncio.sleep(30)
+            await asyncio.sleep(engine["schedule_every_seconds"])
 
     async def due_together(source: str, flows: list[str], slot: str) -> None:
         """A fetch that fails is every flow's reason; a flow that cannot start is its own."""
@@ -78,12 +79,12 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
                 await check_tools(settings, store)
             except Exception:  # a round that could not be made is made again at the next turn
                 pass
-            await asyncio.sleep(EVERY)
+            await asyncio.sleep(engine["health_every_seconds"])
 
     async def watchdog():
         while True:
-            sweep(store)  # records runs whose process is gone; it never resumes one by itself
-            await asyncio.sleep(15)
+            sweep(store, stale)  # records runs whose process is gone; it never resumes one by itself
+            await asyncio.sleep(engine["watch_every_seconds"])
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -101,6 +102,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
     pages = Jinja2Templates(directory=HERE / "templates")
     pages.env.trim_blocks = pages.env.lstrip_blocks = True
     pages.env.filters["num"] = lambda n: f"{n:,}"
+    pages.env.globals["line_chars"] = settings.show["line_chars"]  # the page script cuts a log line's values to this
     pages.env.globals["static"] = lambda name: f"/static/{name}?v={int((HERE / 'static' / name).stat().st_mtime)}"  # a changed file is a new address, so no browser shows an old one
 
     @app.middleware("http")
@@ -137,7 +139,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
             raise HTTPException(400, str(e))
         if not target.is_file():
             raise HTTPException(404, "no such file")
-        return PlainTextResponse(target.read_text(errors="replace")[:200_000])
+        return PlainTextResponse(target.read_text(errors="replace")[:settings.show["raw_chars"]])
 
     # ---- runs: the list, a run and its tabs, an item and its tabs ----
     @app.get("/", response_class=HTMLResponse)
@@ -146,7 +148,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
 
     @app.get("/api/runs")
     async def api_runs():
-        return views.run_rows(store)
+        return views.run_rows(settings, store)
 
     @both("/runs/{run_id}")
     @both("/runs/{run_id}/{tab}")
@@ -235,7 +237,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
     @app.post("/api/runs/{run_id}/resume", status_code=202)
     async def api_resume(run_id: str):
         try:
-            claim_resume(store, run_id)  # decided here, so the answer says whether this request got the run
+            claim_resume(store, run_id, stale)  # decided here, so the answer says whether this request got the run
         except ValueError as e:
             raise HTTPException(409, str(e))
         spawn([run_id], resume_run(settings, store, run_id, claimed=True))
@@ -244,7 +246,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
     @app.post("/api/runs/{run_id}/cancel")
     async def api_cancel(run_id: str):
         try:
-            return {"run": run_id, "result": request_cancel(store, run_id)}
+            return {"run": run_id, "result": request_cancel(store, run_id, stale)}
         except ValueError as e:
             raise HTTPException(409, str(e))
 
@@ -282,20 +284,21 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
 
         async def stream():
             nonlocal last
-            quiet = 0
+            quiet = 0.0  # seconds since the stream last said anything
             while True:
-                rows = store.events(run, item, after=last, limit=500)
+                rows = store.events(run, item, after=last, limit=engine["event_batch"])
                 for event in rows:
                     last = event["seq"]
                     yield f"id: {last}\ndata: {json.dumps(event)}\n\n"
-                if len(rows) == 500:
+                if len(rows) == engine["event_batch"]:
                     continue
                 if not follow or await request.is_disconnected():
                     return
-                quiet = 0 if rows else quiet + 1
-                if quiet and quiet % 30 == 0:
+                quiet = 0.0 if rows else quiet + engine["follow_seconds"]
+                if quiet >= engine["keepalive_seconds"]:
+                    quiet = 0.0
                     yield ": still here\n\n"
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(engine["follow_seconds"])
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

@@ -8,9 +8,6 @@ from .plugins import installed
 from .procs import run_proc
 from .store import now
 
-TIMEOUT = 20   # seconds one check may take
-EVERY = 300    # seconds between the server's own rounds
-
 
 async def tool_health(settings, live, name: str) -> tuple[bool, str]:
     """(healthy, one line saying why). The check gets the secrets the tool was granted, as a real call does."""
@@ -21,14 +18,15 @@ async def tool_health(settings, live, name: str) -> tuple[bool, str]:
     if errs:
         return False, f"tool.yaml: {errs[0]}"
     spec, folder, env = live.tool(name), live.dir("tools", name), settings.secrets_for(f"tools/{name}")
+    seconds, line = settings.engine["health_seconds"], settings.show["line_chars"]
     if "mcp" in spec:
         try:
-            offered = await asyncio.wait_for(plugin_tool(live, name, folder, env).offered(), TIMEOUT)
+            offered = await asyncio.wait_for(plugin_tool(settings, live, name, folder, env).offered(seconds), seconds)
         except Exception as e:
-            return False, f"the server did not start or did not answer: {type(e).__name__}: {str(e)[:200]}"
+            return False, f"the server did not start or did not answer: {type(e).__name__}: {str(e)[:line]}"
         return bool(offered), f"offers {', '.join(offered)}" if offered else "the server started but offers no tool"
-    code, out = await run_proc([str((folder / spec["health"]).resolve())], cwd=folder, env=env, timeout=TIMEOUT)
-    last = (out.strip().splitlines() or [""])[-1][:200]
+    code, out = await run_proc([str((folder / spec["health"]).resolve())], cwd=folder, env=env, **{**settings.proc(), "timeout": seconds})
+    last = (out.strip().splitlines() or [""])[-1][:line]
     return code == 0, last or f"{spec['health']} exited with code {code}"
 
 

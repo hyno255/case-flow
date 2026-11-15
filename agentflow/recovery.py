@@ -13,11 +13,11 @@ from .layout import ENGINE_OWNED, ITEMS
 from .plugins import installed, run_plugins
 from .graph import END
 from .runner import checked, create_run, execute, finish
-from .status import STALE_AFTER
 
 
-def sweep(store, stale_after: float = STALE_AFTER) -> list[str]:
-    """The watchdog: record runs whose process is gone. It records and nothing more: no resume, no clean-up.
+def sweep(store, stale_after: float) -> list[str]:
+    """The watchdog: record runs whose process is gone, which is how a run silent for `stale_after` seconds is read
+    (engine.stale_after_seconds in the settings). It records and nothing more: no resume, no clean-up.
     One conditional update per run, so two watchdogs cannot both record the same interruption."""
     marked = []
     limit = time.time() - stale_after
@@ -38,7 +38,7 @@ def sweep(store, stale_after: float = STALE_AFTER) -> list[str]:
 
 # ---------- what a person can do to a run ----------
 
-def claim_resume(store, run_id: str, stale_after: float = STALE_AFTER) -> None:
+def claim_resume(store, run_id: str, stale_after: float) -> None:
     """Take over an interrupted run. Raises ValueError if it is finished or still alive. One conditional
     update decides it, so two people pressing Resume cannot both get the run."""
     if store.need_run(run_id)["ended"]:
@@ -50,13 +50,13 @@ def claim_resume(store, run_id: str, stale_after: float = STALE_AFTER) -> None:
         raise ValueError(f"run {run_id} is still running; it gave a sign of life less than {stale_after:.0f} seconds ago")
 
 
-async def resume_run(settings, store, run_id: str, *, claimed: bool = False, stale_after: float = STALE_AFTER) -> str:
+async def resume_run(settings, store, run_id: str, *, claimed: bool = False, stale_after: float | None = None) -> str:
     """Continue an interrupted run. An item that had ended is left alone. An unfinished item is put back on the
     flow's graph where its latest try left it, in its own folder, with the reasons from any earlier rejected tries."""
     if not claimed:
-        claim_resume(store, run_id, stale_after)
+        claim_resume(store, run_id, settings.engine["stale_after_seconds"] if stale_after is None else stale_after)
     run = store.run(run_id)
-    snap = run_plugins(store, run)
+    snap = run_plugins(settings, store, run)
     for spec in snap.models_used(run["flow"]):
         build_model(settings, spec)  # stop before any work if a model this run uses is not usable
     graph = snap.graph(run["flow"])
@@ -109,11 +109,11 @@ def prepare_retry(settings, store, run_id: str, item_id: str) -> str:
 async def run_retry(settings, store, new_run: str) -> str:
     run = store.run(new_run)
     (it,) = store.items(new_run)
-    first = run_plugins(store, run).graph(run["flow"]).start
+    first = run_plugins(settings, store, run).graph(run["flow"]).start
     return await execute(settings, store, new_run, [(json.loads(it["payload"]), store.path(it), run["from_stage"] if run["from_stage"] != first else None)])
 
 
-def request_cancel(store, run_id: str, stale_after: float = STALE_AFTER) -> str:
+def request_cancel(store, run_id: str, stale_after: float) -> str:
     """Ask a run to stop. A live run stops its running scripts at once and each item before its next stage; an agent finishes its try. A run whose process is gone is closed here.
     Folders are kept either way. Returns 'asked' or 'closed'."""
     if store.need_run(run_id)["ended"]:

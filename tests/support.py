@@ -45,6 +45,7 @@ class Home(unittest.TestCase):
         self.settings = Settings(self.home)
         self.settings.stand_in = True
         self.store = Store(self.settings.data)
+        self.stale = self.settings.engine["stale_after_seconds"]  # how long a silent run counts as still working
 
     def tearDown(self):
         shutil.rmtree(self.home, ignore_errors=True)

@@ -204,7 +204,7 @@ class Runs(Site):
             self.store.db.execute("UPDATE runs SET ended = NULL, beat = ? WHERE id = ?", (time.time(), run_id))
             self.store.db.execute("UPDATE items SET ended_at = NULL, ended_as = NULL WHERE run_id = ? AND item_id = 'SEC-1042'", (run_id,))
             self.store.db.execute("UPDATE attempts SET outcome = NULL, ended = NULL WHERE run_id = ? AND item_id = 'SEC-1042' AND stage = 'report'", (run_id,))
-            root = trace.build(self.store, self.store.run(run_id), live=True)["root"]
+            root = trace.build(self.store, self.store.run(run_id), self.settings.show, live=True)["root"]
             item = next(s for s in root["children"] if s["name"] == "SEC-1042")
             stages = {s["name"]: s for s in item["children"]}
             self.assertEqual((stages["gather"]["state"], stages["report"]["state"]), ("ok", "run"))
@@ -497,9 +497,8 @@ class Design(Site):
             self.assertEqual((rows["tries"]["v"], rows["on_fail"]["v"], rows["next"]["v"], rows["model"]["v"]), ("2", "analyse", "fix", "luna"))
             self.assertEqual((analyse["md"], analyse["md_href"]), ("stages/analyse.md", "/flows/vuln-triage/files?file=stages/analyse.md"))
             config = {r["k"]: r for r in flow["config"]}
-            self.assertEqual({k: r["mark"] for k, r in config.items()},
-                             {"source": "", "model": "platform default", "limits.at_once": "platform default", "limits.minutes_per_item": "platform default",
-                              "limits.cost_per_run_usd": "platform default"})
+            self.assertEqual({k: r["mark"] for k, r in config.items()},  # every limit the flow runs under, none of them its own
+                             {"source": "", "model": "platform default", **{f"limits.{k}": "platform default" for k in self.settings.limits}})
             for text in ('href="/flows/vuln-triage/files?file=stages/fix.md"', "Read origin.md and candidates.json.", 'href="/sources/security-tickets"',
                          '<span class="tag">default</span>', "For each security ticket", 'href="/flows/vuln-triage/files?file=flow.yaml"'):
                 self.assertIn(text, page)
@@ -538,7 +537,7 @@ class Design(Site):
             self.assertNotIn("<th>args</th>", page)
             self.assertIn(">MCP server<", c.get("/tools").text)
             flow = c.get("/api/flows/vuln-triage").json()  # a malformed block is a check error on the page, not a crash
-            self.assertIn("limits: must be a mapping of at_once, cost_per_run_usd, minutes_per_item", flow["errors"])
+            self.assertTrue(any(e.startswith("limits: must be a mapping of at_once, cost_per_run_usd, ") for e in flow["errors"]), flow["errors"])
 
     def test_the_settings_show_names_and_never_a_key(self):
         os.environ["OPENAI_API_KEY"] = "sk-not-for-any-page"
@@ -554,8 +553,13 @@ class Design(Site):
             self.assertEqual(view["grants"][0], {"plugin": "sources/security-tickets", "href": "/sources/security-tickets",
                                                  "secrets": [{"name": "OPENAI_API_KEY", "set": True}, {"name": "TRACKER_TOKEN", "set": False}]})
             self.assertEqual(view["errors"], ["grants: 'tools/nope' is not a source, tool or flow in the plugins folder"])
+            numbers = {n["name"]: {r["k"]: (r["v"], r["mark"]) for r in n["rows"]} for n in view["numbers"]}  # every limit, and whether agentflow.yaml sets it
+            self.assertEqual(list(numbers), ["limits", "engine", "show"])
+            self.assertEqual((numbers["limits"]["script_seconds"], numbers["engine"]["stale_after_seconds"], numbers["show"]["rows"]),
+                             (("120", ""), ("60", "default"), ("50", "default")))
             page = c.get("/settings").text
-            for text in ("<code>OPENAI_API_KEY</code>", ">set<", ">not set<", "gpt-6-luna", ">default<", "<code>TRACKER_TOKEN</code>", "cost_per_run_usd", "is not a source, tool or flow"):
+            for text in ("<code>OPENAI_API_KEY</code>", ">set<", ">not set<", "gpt-6-luna", ">default<", "<code>TRACKER_TOKEN</code>", "cost_per_run_usd", "is not a source, tool or flow",
+                         "Engine timings", "heartbeat_seconds", "Shown on pages", "line_chars"):
                 self.assertIn(text, page)
             source = c.get("/sources/security-tickets").text
             for text in ("<code>OPENAI_API_KEY</code>", "<code>TRACKER_TOKEN</code>"):

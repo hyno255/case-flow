@@ -55,6 +55,7 @@
   if (part && part.dataset.events && !log) follow(part.dataset.events, function (e) { if (!QUIET[e.type]) refresh(); });
 
   // ---- the log: built from the stream, so replay and live are the same code ----
+  var LINE = Number(document.body.dataset.line);  // how much of a value one log line shows: show.line_chars in the settings
   var stageWho = log ? JSON.parse(log.dataset.who || "{}") : {};  // stage -> who does it, for events that do not say
   var tryBy = {};     // item|stage|try -> who does that try, from its attempt_started
   function who(e) {
@@ -81,12 +82,12 @@
       case "attempt_started": return ["head", "try " + e.n + (e.model ? " · " + e.model : "") + (e.feedback ? " · told the earlier reasons" : "")];
       case "attempt_cancelled": return ["fail", "try " + e.n + " cancelled: the script was stopped"];
       case "attempt_interrupted": return ["fail", "try " + e.n + " interrupted: the process stopped"];
-      case "tool_call": return ["", "tool " + e.tool + " " + (typeof e.args === "string" ? e.args : JSON.stringify(e.args || {})).slice(0, 300)];
-      case "tool_result": return ["dim", "  " + e.tool + " answered · " + e.chars + " characters" + took(e) + (e.preview ? " · " + String(e.preview).slice(0, 200) : "")];
+      case "tool_call": return ["", "tool " + e.tool + " " + (typeof e.args === "string" ? e.args : JSON.stringify(e.args || {})).slice(0, LINE)];
+      case "tool_result": return ["dim", "  " + e.tool + " answered · " + e.chars + " characters" + took(e) + (e.preview ? " · " + String(e.preview).slice(0, LINE) : "")];
       case "model_call": return ["dim", "model call" + (e.model ? " · " + e.model : "") + " · " + e.tokens_in + " in, " + e.tokens_out + " out" + took(e) +
                                  (e.cost_usd == null ? " · cost not recorded" : e.cost_usd === 0 ? " · free" : " · $" + e.cost_usd.toFixed(5) + " estimated")];
       case "attempt_ended": return ["dim", e.error ? "try failed: " + e.error
-                                 : e.exit_code != null ? "exit code " + e.exit_code + took(e) + (e.output ? " · " + String(e.output).slice(-300) : "")
+                                 : e.exit_code != null ? "exit code " + e.exit_code + took(e) + (e.output ? " · " + String(e.output).slice(-LINE) : "")
                                  : "try ended · " + e.model_calls + " model calls · " + e.tool_calls + " tool calls · " + (e.tokens_in + e.tokens_out) + " tokens" + took(e)];
       case "verdict": return [e.passed ? "pass" : "fail", (e.passed ? "pass" : e.needs_person ? "fail: a person is needed" : "fail") + (e.reason ? " · " + e.reason : "") + took(e)];
       case "stage_passed": return ["pass", "stage passed after " + e.tries + (e.tries === 1 ? " try" : " tries")];

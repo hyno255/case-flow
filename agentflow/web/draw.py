@@ -5,7 +5,7 @@ in the order written, then the report. A pass edge is a solid arrow,
 a fail edge a dashed one: a loop at the right of the stage when it tries again itself, an arc up the left side when
 `on_fail` names an earlier stage. A pass edge that skips stages arcs down the left side.
 """
-from ..graph import END, compile_flow, stage_by, stage_tries, validated
+from ..graph import END, compile_flow, stage_by, validated
 from .show import where_text
 
 W, GAP, X0, LINE = 230, 34, 10, 15   # box width, space between boxes, margin, height of a line of text
@@ -17,10 +17,10 @@ def _cut(text, n: int = 32) -> str:
     return text if len(text) <= n else text[:n - 1] + "…"
 
 
-def graph(flow: dict, source: dict | None = None, stats: dict | None = None, base: str | None = "") -> dict:
-    """`source` is the flow's source as loaded (for the file it writes). `stats` adds a run's numbers: by stage id, or ":end" for the report,
+def graph(flow: dict, limits: dict, source: dict | None = None, stats: dict | None = None, base: str | None = "") -> dict:
+    """`limits` are the ones the flow runs under (for a stage's tries). `source` is the flow's source as loaded (for the file it writes). `stats` adds a run's numbers: by stage id, or ":end" for the report,
     {state, lines, href}. `base` goes before each stage's `#stage-<id>` link; None draws the stages without links."""
-    g, stats = compile_flow(flow)[0], stats or {}
+    g, stats = compile_flow(flow, limits)[0], stats or {}
     order = g.order
     row = {sid: i + 1 for i, sid in enumerate(order)}
     row[END] = len(order) + 1
@@ -73,7 +73,7 @@ def graph(flow: dict, source: dict | None = None, stats: dict | None = None, bas
             out, y1, y2 = left - swing(e), a["y"] + a["h"] * 0.35, b["y"] + b["h"] * 0.35
             edge(e.src, e.dst, "pass", "skip", f"M{left},{y1} C{out},{y1} {out},{y2} {left - 3},{y2}")
         else:
-            text = f"fail · up to {stage_tries(g.stages[e.src])}"
+            text = f"fail · up to {g.tries(e.src)}"
             if e.dst == e.src:  # the same stage tries again: a loop at its right
                 x, out, y1, y2 = left + W, left + W + LOOP, a["y"] + a["h"] * 0.3, a["y"] + a["h"] * 0.7
                 edge(e.src, e.dst, "fail", "loop", f"M{x},{y1} C{out},{y1} {out},{y2} {x + 3},{y2}", text, x + 0.75 * LOOP + 6, a["y"] + a["h"] / 2 + 3)

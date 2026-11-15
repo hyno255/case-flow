@@ -20,7 +20,6 @@ from .stages import Ctx, run_item
 from .store import now
 
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-HEARTBEAT = 5.0  # seconds between signs of life from a process doing a run
 
 
 class FetchFailed(Exception):
@@ -35,9 +34,9 @@ async def fetch(settings, registry: Registry, source: str, out: Path) -> list[di
     folder = registry.dir("sources", source)
     out.mkdir(parents=True)
     env = {**settings.secrets_for(f"sources/{source}"), "AGENTFLOW_OUT": str(out.resolve())}
-    code, said = await run_proc([str((folder / spec["run"]).resolve())], cwd=folder, env=env)
+    code, said = await run_proc([str((folder / spec["run"]).resolve())], cwd=folder, env=env, **settings.proc())
     if code != 0:
-        raise FetchFailed(f"{spec['run']} exited with code {code}: {said[-500:]}")
+        raise FetchFailed(f"{spec['run']} exited with code {code}: {said[-settings.limits['error_chars']:]}")
     if not (out / spec["output"]).is_file():
         raise FetchFailed(f"{spec['run']} did not write {spec['output']} into its output folder (AGENTFLOW_OUT)")
     try:
@@ -80,7 +79,7 @@ def create_run(settings, store, live: Registry, flow: str, *, source, fetch_id, 
 async def execute(settings, store, run_id: str, todo: list[tuple[dict, Path, str | None]]) -> str:
     """Work the given items of a run, then render its report and end it. `todo` is (item, work folder, stage to start at)."""
     run = store.run(run_id)
-    snap = run_plugins(store, run)  # the plugin files exactly as the run first saw them
+    snap = run_plugins(settings, store, run)  # the plugin files exactly as the run first saw them
     flow, trial = run["flow"], bool(run["trial"])
     flow_def, graph = snap.flow(flow), snap.graph(flow)
     limits = settings.limits_for(flow_def)
@@ -88,7 +87,7 @@ async def execute(settings, store, run_id: str, todo: list[tuple[dict, Path, str
     async def heart() -> None:
         while True:
             store.beat(run_id)
-            await asyncio.sleep(HEARTBEAT)
+            await asyncio.sleep(settings.engine["heartbeat_seconds"])
 
     alive = asyncio.create_task(heart())
     gate = asyncio.Semaphore(limits["at_once"])
@@ -104,7 +103,7 @@ async def execute(settings, store, run_id: str, todo: list[tuple[dict, Path, str
             try:
                 await run_item(ctx, start_at)
             except Exception as e:  # an engine fault ends this item, not the run
-                store.end_item(run_id, item["id"], "failed", f"engine error: {type(e).__name__}: {str(e)[:300]}")
+                store.end_item(run_id, item["id"], "failed", f"engine error: {type(e).__name__}: {str(e)[:limits['error_chars']]}")
 
     try:
         await asyncio.gather(*(one(*t) for t in todo))

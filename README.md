@@ -122,6 +122,41 @@ mcp: [python3, ./server.py]
 The server checks every tool when it starts, every five minutes and on request. The Tools page shows the result,
 and a failing tool is named on every flow whose agents use it.
 
+## Limits and timings
+
+The code holds no limit of its own. Every one is a key in `agentflow.yaml`, and the Settings page lists them all
+with a mark on those left at their default (`agentflow/defaults.yaml`).
+
+```yaml
+# agentflow.yaml
+limits:                  # what one run may use; a flow.yaml may set its own `limits` with the same keys
+  at_once: 4
+  minutes_per_item: 10
+  cost_per_run_usd: 2.00
+  script_seconds: 120    # one script: a stage's, a check, a tool, a source's fetch
+  model_calls: 20        # one agent run
+  tries: 2               # a stage that names no `tries`
+  max_tries: 5
+  read_chars: 20000      # of a file given to an agent
+  tool_chars: 8000       # of a tool's answer given to an agent
+  reason_chars: 2000     # of a failed check's output, told to the next try
+  error_chars: 500
+  event_chars: 1500
+engine:                  # the engine's own timings, in seconds
+  health_every_seconds: 300
+  stale_after_seconds: 60
+show:                    # how much the pages and the command line show
+  rows: 50
+```
+
+| Section | Keys |
+|---|---|
+| `limits` | as above |
+| `engine` | `health_seconds`, `health_every_seconds`, `health_stale_seconds`, `stop_grace_seconds`, `poll_seconds`, `heartbeat_seconds`, `stale_after_seconds`, `schedule_every_seconds`, `watch_every_seconds`, `follow_seconds`, `keepalive_seconds`, `event_batch` |
+| `show` | `rows`, `line_chars`, `label_chars`, `fact_chars`, `block_chars`, `prompt_chars`, `file_chars`, `raw_chars` |
+
+`check` reports an unknown key or a value that is not a number above 0.
+
 ## Where things are
 
 ```
