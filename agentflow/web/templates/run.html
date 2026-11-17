@@ -3,8 +3,7 @@
 {% import "_trace.html" as trace %}
 {% import "_graph.html" as graph %}
 {% block title %}{{ v.id }} · {{ v.flow }} · agentflow{% endblock %}
-{# A run that can still change follows the event stream. On the Log tab the log's own stream does that. #}
-{% block live %} data-seq="{{ v.seq }}"{% if v.live and v.tab != "log" %} data-events="/api/events?run={{ v.id }}&after={{ v.seq }}"{% endif %}{% endblock %}
+{% block live %}{% if v.live %} data-refresh="{{ refresh }}"{% endif %}{% endblock %}
 {% block crumbs %}<a href="/">Runs</a>{% endblock %}
 {% block heading %}{{ v.id }} {{ ui.pill(v.status, v.pill) }}{% if v.trial %} {{ ui.pill("trial", "wait", "one item, to try the flow") }}{% endif %}{% endblock %}
 {% block actions %}
@@ -23,7 +22,7 @@
   <div><dt>Plugins</dt><dd><code title="hash of the plugin files this run used">{{ v.snapshot }}</code></dd></div>
 </dl>
 {% endblock %}
-{% block tabs %}{{ ui.tabs("/runs/" ~ v.id, ["items", "output", "trace", "log", "flow"], v.tab) }}{% endblock %}
+{% block tabs %}{{ ui.tabs("/runs/" ~ v.id, ["items", "output", "trace", "flow"], v.tab) }}{% endblock %}
 {% block main %}
 {% if v.tab == "items" %}
 <div class="scroll">
@@ -80,18 +79,5 @@
     </table>
   </div>
 </div>
-{% endif %}
-{% endblock %}
-{% block fixed %}
-{% if v.tab == "log" %}
-<main>
-  <p class="controls">
-    <label for="log-item">Item</label>
-    <select id="log-item"><option value="">all</option>{% for i in v.item_ids %}<option value="{{ i }}">{{ i }}</option>{% endfor %}</select>
-    <label for="log-find">Containing</label> <input id="log-find" type="search" placeholder="any text">
-    <label><input id="log-calls" type="checkbox" checked> model and tool calls</label>
-  </p>
-  <ol id="log" class="log wide" data-items="1" data-who='{{ v.who | tojson }}' data-events="/api/events?run={{ v.id }}&after=0{% if not v.live %}&follow=false{% endif %}" aria-live="polite"></ol>
-</main>
 {% endif %}
 {% endblock %}

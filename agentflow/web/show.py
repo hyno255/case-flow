@@ -52,13 +52,14 @@ def duration(seconds: float) -> str:
 
 def cost(u: dict, not_recorded: str = "cost was not recorded for this run") -> dict:
     """{text, tip} for a usage total (Store.usage, or the same three facts from a trace span).
-    Not known is a dash with the reason, partly known is "≥", and a known zero is "$0"."""
+    Not known is a dash with the reason, and a known zero is "$0". A total that leaves out a try that was cut short is
+    shown as it is, and the tooltip says so."""
     if not u["has_model_calls"]:
         return {"text": DASH, "tip": "no model was used"}
     partly = not u["cost_known"] and bool(u["cost_usd"])
     text = cost_text({**u, "cost_known": u["cost_known"] or partly}, unknown=DASH)
     if partly:
-        return {"text": f"≥ {text}", "tip": "part of the cost was not recorded"}
+        return {"text": text, "tip": "without one try that was cut short, which did not say what it used"}
     if text == DASH:
         return {"text": DASH, "tip": not_recorded}
     if not u["cost_usd"]:

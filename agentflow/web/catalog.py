@@ -12,7 +12,7 @@ from urllib.parse import quote
 from agentflow.plugins.graph import compile_flow, stage_by, validated
 from agentflow.records.layout import confined
 from agentflow.plugins.registry import STAGES, installed
-from agentflow.settings import MODEL_DEFAULTS, SECTIONS
+from agentflow.settings import MODEL_DEFAULTS
 from . import draw, show, views
 
 KINDS = ("flows", "agents", "tools", "sources")
@@ -60,7 +60,7 @@ def model_cell(settings, spec) -> dict:
 def files_tab(settings, kind: str, name: str, file: str) -> dict:
     folder = settings.plugins / kind / name
     tree = show.file_tree(folder, file)
-    return {"tree": tree, "file": show.file_preview(folder, file or show.first_file(tree, (MAIN[kind],)), f"/plugins/{kind}/{name}/files", settings.show["file_chars"])}
+    return {"tree": tree, "file": show.file_preview(folder, file or show.first_file(tree, (MAIN[kind],)), f"/plugins/{kind}/{name}/files", settings.internal["file_chars"])}
 
 
 def file_link(kind: str, name: str, folder: Path, rel) -> str:
@@ -124,7 +124,7 @@ def health_cell(settings, store, name: str) -> dict:
     h = store.one("SELECT * FROM health WHERE tool = ?", name)
     if h is None:
         return {"state": "not checked", "pill": "wait", "detail": "", "at": "", "old": False}
-    old = show.seconds_between(h["checked"], None) > settings.engine["health_stale_seconds"]
+    old = show.seconds_between(h["checked"], None) > settings.internal["health_stale_seconds"]
     return {"state": "ok" if h["ok"] else "failing", "pill": "done" if h["ok"] else "bad", "detail": h["detail"] or "",
             "at": show.when(h["checked"]), "old": old}
 
@@ -256,7 +256,7 @@ def flow_view(settings, store, name: str, tab: str, file: str, errors: dict) -> 
     f = _load(live.flow, name, default={})
     v = {"kind": "flows", "name": name, "tab": tab, "tabs": TABS["flows"], "errors": _safe(live.check_flow, name), "folder": str(live.dir("flows", name)),
          "source": str(f.get("source") or "") if f.get("source") in live.names("sources") else "",
-         "error": errors.get(f"flows/{name}", ""), "seq": views.max_seq(store), "schedule": schedule_cell(store, name, f)}
+         "error": errors.get(f"flows/{name}", ""), "schedule": schedule_cell(store, name, f)}
     v["can_run"] = bool(v["source"]) and not v["errors"]
     if tab == "design":
         v.update(flow_design(settings, store, live, name, f))
@@ -264,6 +264,7 @@ def flow_view(settings, store, name: str, tab: str, file: str, errors: dict) -> 
         v.update(files_tab(settings, "flows", name, file))
     else:
         v["runs"] = views.run_rows(settings, store, flow=name)
+        v["live"] = any(r["status"] in views.LIVE for r in v["runs"])
     return v
 
 
@@ -333,16 +334,13 @@ def source_view(settings, store, name: str, tab: str = "config", file: str = "")
                          "time": show.duration(show.seconds_between(f["started"], f["ended"])) if f["ended"] else "",
                          "folder": str(store.root / f["folder"]) if f["folder"] else "",
                          "runs": [{"id": r["id"], "flow": r["flow"]} for r in store.q("SELECT id, flow FROM runs WHERE fetch_id = ?", f["id"])]}
-                        for f in store.q("SELECT * FROM fetches WHERE source = ? ORDER BY id DESC LIMIT ?", name, settings.show["rows"])]
+                        for f in store.q("SELECT * FROM fetches WHERE source = ? ORDER BY id DESC LIMIT ?", name, settings.internal["rows"])]
     else:
         v.update(files_tab(settings, "sources", name, file))
     return v
 
 
 # ---------- the platform ----------
-
-NUMBERS = {"limits": "Limits of a run", "engine": "Engine timings", "show": "Shown on pages"}  # the sections of numbers in agentflow.yaml
-
 
 def settings_view(settings) -> dict:
     """agentflow.yaml as the engine reads it. A key is shown as the name of its variable and whether that is set, never as a value."""
@@ -355,5 +353,4 @@ def settings_view(settings) -> dict:
                        "key_env": m.get("api_key_env", ""), "key_set": bool(os.environ.get(m.get("api_key_env") or ""))})
     return {"file": str(settings.home / "agentflow.yaml"), "plugins": str(settings.plugins), "data": str(settings.data), "errors": settings.check(),
             "models": models,
-            "numbers": [{"name": s, "title": NUMBERS[s], "rows": [row(k, val, mark="" if k in written else "default") for k, val in getattr(settings, s).items()]}
-                        for s in SECTIONS for written in [settings.written[s] if isinstance(settings.written[s], dict) else {}]]}
+            "limits": [row(k, val, mark="" if isinstance(settings.written, dict) and k in settings.written else "default") for k, val in settings.limits.items()]}

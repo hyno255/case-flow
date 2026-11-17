@@ -4,7 +4,7 @@
 {% import "_files.html" as files %}
 {% set base = "/runs/" ~ v.run ~ "/items/" ~ v.id %}
 {% block title %}{{ v.id }} · {{ v.run }} · agentflow{% endblock %}
-{% block live %} data-seq="{{ v.seq }}"{% if v.live and v.tab != "log" %} data-events="/api/events?run={{ v.run }}&item={{ v.id }}&after={{ v.seq }}"{% endif %}{% endblock %}
+{% block live %}{% if v.live %} data-refresh="{{ refresh }}"{% endif %}{% endblock %}
 {% block crumbs %}<a href="/">Runs</a><a href="/runs/{{ v.run }}">{{ v.run }}</a>{% endblock %}
 {% block heading %}{{ v.id }} {{ ui.pill(v.status, v.pill) }}{% if v.title %} <small>{{ v.title }}</small>{% endif %}{% endblock %}
 {% block head %}
@@ -16,22 +16,11 @@
   <div><dt>Time</dt><dd>{{ v.time or "—" }}</dd></div>
 </dl>
 {% endblock %}
-{% block tabs %}{{ ui.tabs(base, ["files", "trace", "log"], v.tab) }}{% endblock %}
+{% block tabs %}{{ ui.tabs(base, ["files", "trace"], v.tab) }}{% endblock %}
 {% block main %}
 {% if v.tab == "trace" %}
 {{ trace.view(v.trace, v.span, ("item", "stage", "try")) }}
 {% elif v.tab == "files" %}
 {{ files.browser(v, base ~ "/files") }}
-{% endif %}
-{% endblock %}
-{% block fixed %}
-{% if v.tab == "log" %}
-<main>
-  <p class="controls">
-    <label for="log-find">Containing</label> <input id="log-find" type="search" placeholder="any text">
-    <label><input id="log-calls" type="checkbox" checked> model and tool calls</label>
-  </p>
-  <ol id="log" class="log" data-who='{{ v.who | tojson }}' data-events="/api/events?run={{ v.run }}&item={{ v.id }}&after=0{% if not v.live %}&follow=false{% endif %}" aria-live="polite"></ol>
-</main>
 {% endif %}
 {% endblock %}

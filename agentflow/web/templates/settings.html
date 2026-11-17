@@ -22,12 +22,10 @@
   </div>
 </section>
 <div class="cards">
-  {% for n in v.numbers %}
   <section class="card">
-    <h2>{{ n.title }} <small><code>{{ n.name }}:</code></small></h2>
-    {{ ui.kv(n.rows) }}
+    <h2>Limits of a run <small><code>limits:</code></small></h2>
+    {{ ui.kv(v.limits) }}
   </section>
-  {% endfor %}
   <section class="card">
     <h2>Folders</h2>
     <table class="kv">

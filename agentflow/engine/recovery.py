@@ -50,7 +50,7 @@ async def resume_run(settings, store, run_id: str, *, claimed: bool = False, sta
     """Continue an interrupted run. An item that had ended is left alone. An unfinished item is put back on the
     flow's graph where its latest try left it, in its own folder, with the reasons from any earlier rejected tries."""
     if not claimed:
-        claim_resume(store, run_id, settings.engine["stale_after_seconds"] if stale_after is None else stale_after)
+        claim_resume(store, run_id, settings.internal["stale_after_seconds"] if stale_after is None else stale_after)
     run = store.run(run_id)
     snap = run_plugins(settings, store, run)
     for spec in snap.models_used(run["flow"]):

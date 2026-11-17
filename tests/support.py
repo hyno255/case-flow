@@ -5,6 +5,7 @@ import time
 import unittest
 from pathlib import Path
 
+from agentflow.records import log
 from agentflow.settings import Settings
 from agentflow.records.store import Store
 
@@ -45,7 +46,8 @@ class Home(unittest.TestCase):
         self.settings = Settings(self.home)
         self.settings.stand_in = True
         self.store = Store(self.settings.data)
-        self.stale = self.settings.engine["stale_after_seconds"]  # how long a silent run counts as still working
+        self.store.listeners.append(log.writer(self.store, self.settings.internal["line_chars"]))
+        self.stale = self.settings.internal["stale_after_seconds"]  # how long a silent run counts as still working
 
     def tearDown(self):
         shutil.rmtree(self.home, ignore_errors=True)

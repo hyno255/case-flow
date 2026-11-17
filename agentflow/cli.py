@@ -20,6 +20,7 @@ import json
 import os
 import time
 
+from agentflow.records import log
 from agentflow.records.history import earlier, earlier_file
 from agentflow.records.layout import OUTPUT
 from agentflow.plugins.registry import installed
@@ -32,41 +33,17 @@ def money(u: dict) -> str:
     return cost_text(u, " estimated", "cost unknown")
 
 
-def live_printer(line: int):
-    """A printer of one line per thing worth watching, as it happens. `line` is how much of a value a line shows (show.line_chars)."""
+def printer(settings):
+    """Prints the line of each event that has one, as it happens."""
     def show(event: dict) -> None:
-        t, who = event["type"], f"{event.get('item') or '':<9} {event.get('stage') or '':<8}"
-        if t == "attempt_started":
-            print(f"{who} try {event['n']}  {event['by']}" + ("  (with feedback)" if event.get("feedback") else ""), flush=True)
-        elif t == "tool_call":
-            args = event["args"] if isinstance(event["args"], str) else json.dumps(event["args"])
-            print(f"{who}   {'reviewer ' if event.get('role') else ''}tool {event['tool']} {args[:line]}", flush=True)
-        elif t == "cli_run":
-            print(f"{who}   the {event['harness']} CLI ended after {event['seconds']:.0f}s: {event['said'][:line]}", flush=True)
-        elif t == "verdict":
-            print(f"{who}   {event['by']}: {'pass' if event['passed'] else 'FAIL'}  {event['reason'][:line]}", flush=True)
-        elif t == "person_asked":
-            print(f"{who}   asked for a person: {event['reason'][:line]}", flush=True)
-        elif t == "attempt_cancelled":
-            print(f"{who} try {event['n']} was cancelled: {event['script']} was stopped", flush=True)
-        elif t == "attempt_interrupted":
-            print(f"{who} try {event['n']} was interrupted: the process stopped", flush=True)
-        elif t == "finish_ended":
-            print(f"run       finish script {event['script']} " + ("ended" if event["exit_code"] == 0 else f"FAILED with exit code {event['exit_code']}: {event['output'][-line:]}"), flush=True)
-        elif t == "run_interrupted":
-            print(f"run       interrupted: {event['reason']}", flush=True)
-        elif t == "run_resumed":
-            print(f"run       resumed for {', '.join(event['items']) or 'no items'}", flush=True)
-        elif t == "item_started" and event.get("from_stage"):
-            print(f"{event['item']:<9} continues at {event['from_stage']}; earlier stages are kept", flush=True)
-        elif t == "item_ended":
-            print(f"{event['item']:<9} ended: {event['ended_as']}" + (f"  ({event['reason'][:line]})" if event.get("reason") else ""), flush=True)
-
+        said = log.line(event, settings.internal["line_chars"])
+        if said is not None:
+            print(said, flush=True)
     return show
 
 
 def print_run(settings, store: Store, run_id: str, item_id: str | None = None) -> int:
-    run, stale, line = store.need_run(run_id), settings.engine["stale_after_seconds"], settings.show["line_chars"]
+    run, stale, line = store.need_run(run_id), settings.internal["stale_after_seconds"], settings.internal["line_chars"]
     u = store.usage(run_id)
     print(f"\n{'trial' if run['trial'] else 'run'} {run_id} · {run['flow']} · {run_status(run, stale)[0]} · plugins {run['snapshot']} · {u['tokens']:,} tokens · {money(u)}")
     for it in store.items(run_id):
@@ -85,9 +62,9 @@ def print_run(settings, store: Store, run_id: str, item_id: str | None = None) -
 
 
 def print_runs(settings, store: Store) -> int:
-    for run in store.q("SELECT * FROM runs ORDER BY started DESC, rowid DESC LIMIT ?", settings.show["rows"]):
+    for run in store.q("SELECT * FROM runs ORDER BY started DESC, rowid DESC LIMIT ?", settings.internal["rows"]):
         ends = store.q("SELECT COALESCE(ended_as,'not finished') e, COUNT(*) n FROM items WHERE run_id = ? GROUP BY e", run["id"])
-        print(f"{run['id']}  {run['flow']:<16} {run['started']}  {'trial · ' if run['trial'] else ''}{run_status(run, settings.engine['stale_after_seconds'])[0]} · "
+        print(f"{run['id']}  {run['flow']:<16} {run['started']}  {'trial · ' if run['trial'] else ''}{run_status(run, settings.internal['stale_after_seconds'])[0]} · "
               f"{', '.join(f'{x['n']} {x['e']}' for x in ends)} · {money(store.usage(run['id']))}")
     return 0
 
@@ -95,7 +72,7 @@ def print_runs(settings, store: Store) -> int:
 def follow(settings, store: Store, run_id: str) -> None:
     """Print a run's events from the first one, then as they come, until the run ends. The same events the pages stream."""
     store.need_run(run_id)
-    seq, show = 0, live_printer(settings.show["line_chars"])
+    seq, show = 0, printer(settings)
     while True:
         events = store.events(run_id, after=seq)
         for e in events:
@@ -103,7 +80,7 @@ def follow(settings, store: Store, run_id: str) -> None:
             show(e)
         if any(e["type"] == "run_ended" for e in events) or (not events and store.run(run_id)["ended"]):
             return
-        time.sleep(settings.engine["follow_seconds"])
+        time.sleep(settings.internal["follow_seconds"])
 
 
 def cmd_check(a, settings: Settings) -> int:
@@ -171,7 +148,7 @@ def cmd_resume(a, settings, store) -> int:
 
 def cmd_cancel(a, settings, store) -> int:
     from agentflow.engine.recovery import request_cancel
-    how = request_cancel(store, a.run, settings.engine["stale_after_seconds"])
+    how = request_cancel(store, a.run, settings.internal["stale_after_seconds"])
     print(f"{a.run}: " + ("asked to stop; running scripts are stopped now, and an agent finishes its try first" if how == "asked" else "closed; its process had already stopped"))
     return 0
 
@@ -211,12 +188,12 @@ def cmd_history(a, settings, store) -> int:
     if a.file:
         if not (a.run and a.item):
             raise ValueError("--file needs --run and --item")
-        print(earlier_file(store, a.run, a.item, a.file, settings.limits["read_chars"]))
+        print(earlier_file(store, a.run, a.item, a.file, settings.internal["read_chars"]))
         return 0
     flow = a.flow or os.environ.get("AGENTFLOW_FLOW")
     if not flow:
         raise ValueError("name the flow: agentflow history <flow>")
-    print(json.dumps(earlier(store, flow, a.item, settings.show["history_rows"], not_run=os.environ.get("AGENTFLOW_RUN")), indent=1))
+    print(json.dumps(earlier(store, flow, a.item, settings.internal["rows"], not_run=os.environ.get("AGENTFLOW_RUN")), indent=1))
     return 0
 
 
@@ -269,9 +246,10 @@ def main(argv: list[str] | None = None) -> int:
     if a.fn is cmd_check:
         return cmd_check(a, settings)  # needs no store, so it can run before anything was ever written
     store = Store(settings.data)
+    store.listeners.append(log.writer(store, settings.internal["line_chars"]))  # every run keeps its lines in its output folder
     settings.stand_in = getattr(a, "stand_in", False)
     if a.watch:
-        store.listeners.append(live_printer(settings.show["line_chars"]))  # one line per thing worth watching, as the run goes
+        store.listeners.append(printer(settings))  # one line per thing worth watching, as the run goes
     try:
         return a.fn(a, settings, store)
     except stops() as e:

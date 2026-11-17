@@ -76,7 +76,7 @@ class Graph:
 
 def compile_flow(flow: dict, limits: dict) -> tuple[Graph, list[str]]:
     """(graph, errors). The graph is usable only when there are no errors. `limits` are the ones the flow runs under:
-    `tries` for a stage that names none, and `max_tries`, the most a stage may ask for."""
+    `tries` for a stage that names none."""
     errs: list[str] = []
     stages: dict[str, dict] = {}
     for s in flow.get("stages") or []:
@@ -105,8 +105,8 @@ def compile_flow(flow: dict, limits: dict) -> tuple[Graph, list[str]]:
                 back = sid
             edges.append(Edge(sid, back, "fail"))
         tries = s.get("tries", limits["tries"])
-        if isinstance(tries, bool) or not isinstance(tries, int) or not 1 <= tries <= limits["max_tries"]:
-            errs.append(f"stage {sid}: 'tries' must be a number from 1 to {limits['max_tries']}")
+        if isinstance(tries, bool) or not isinstance(tries, int) or tries < 1:
+            errs.append(f"stage {sid}: 'tries' must be a number, 1 or more")
     graph = Graph(stages, edges, limits["tries"])
     if not stages:
         return graph, errs + ["the flow has no stages"]

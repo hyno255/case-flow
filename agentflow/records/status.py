@@ -50,4 +50,4 @@ def cost_text(u: dict, est: str = "", unknown: str = "unknown") -> str:
         return "no model"
     if u["cost_known"]:
         return f"${u['cost_usd']:.4f}{est}" if u["cost_usd"] else "$0"  # nothing was charged, which is known, not estimated
-    return f"${u['cost_usd']:.4f}{est} + unknown" if u["cost_usd"] else unknown
+    return f"${u['cost_usd']:.4f}{est}, without a try that was cut short" if u["cost_usd"] else unknown

@@ -1,7 +1,7 @@
 """A stand-in for a coding CLI, so a stage handed to Codex or Claude Code can be exercised with no sign-in and at no cost.
 
 With --stand-in the engine starts this in place of the CLI:
-`stand_in_cli.py <codex|claude> <file for the last message> <the flow's stand-in script>`, in the item's work folder,
+`stand_in_cli.py <codex|claude> <file for the last message> <the flow's stand-in script> <work|review>`, in the item's work folder,
 with the instructions and the prompt on stdin. It knows no flow. It asks the flow's stand-in script what the model would
 do next (see `ask`), does it the way a CLI would (reads and writes files, runs the commands the instructions name,
 writes needs-person.md), and prints what the CLI it stands in for would print.
@@ -33,19 +33,19 @@ def answer(code: int, out: str, err: str) -> dict:
     return json.loads(out)
 
 
-def ask(script: str, prompt: str, results: list[dict]) -> dict:
-    done = subprocess.run([sys.executable, "-I", script], input=question(prompt, False, results), capture_output=True, text=True)
+def ask(script: str, prompt: str, review: bool, results: list[dict]) -> dict:
+    done = subprocess.run([sys.executable, "-I", script], input=question(prompt, review, results), capture_output=True, text=True)
     return answer(done.returncode, done.stdout, done.stderr)
 
 
 def main() -> None:
-    shape, last, script, told = sys.argv[1], Path(sys.argv[2]), sys.argv[3], sys.stdin.read()
+    shape, last, script, review, told = sys.argv[1], Path(sys.argv[2]), sys.argv[3], sys.argv[4] == "review", sys.stdin.read()
     commands = dict(re.findall(r"^- ([\w-]+): .* Command: `(\S+)", told, re.M))  # the commands the engine named
     results, wrote = [], 0
     while True:
-        next_ = ask(script, told, results)
-        if "text" in next_:
-            said = next_["text"]
+        next_ = ask(script, told, review, results)
+        if "text" in next_ or "verdict" in next_:  # a reviewer's answer is its verdict, as JSON
+            said = next_["text"] if "text" in next_ else json.dumps(next_["verdict"])
             break
         for c in next_["calls"]:
             tool, args = c["tool"], c["args"]

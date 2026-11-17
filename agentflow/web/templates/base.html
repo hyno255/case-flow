@@ -1,5 +1,5 @@
 {# The shell of every page: the pages on the left, then a bar (where you are, the title, what you can do), tabs, and the content.
-   With ?fragment=1 only the inside of #live-part is returned, which is what the live refresh swaps in. #}
+   With ?fragment=1 only the inside of #live-part is returned, which is what a page of a run that is still going fetches again every few seconds (data-refresh). #}
 {% if not fragment %}<!doctype html>
 <html lang="en">
 <head>
@@ -8,7 +8,7 @@
 <title>{% block title %}agentflow{% endblock %}</title>
 <link rel="stylesheet" href="{{ static('app.css') }}">
 </head>
-<body data-line="{{ line_chars }}">
+<body>
 <nav class="side" aria-label="Pages">
   <a class="brand" href="/">agentflow</a>
   <a href="/"{% if nav.section == "runs" %} aria-current="page"{% endif %}>Runs <span id="running" class="badge" title="running now"{% if not nav.running %} hidden{% endif %}>{{ nav.running }}</span></a>
@@ -22,7 +22,7 @@
 <div class="page">
 <div id="live-part"{% block live %}{% endblock %}>
 {% endif %}
-<header class="bar" data-running="{{ nav.running }}">
+<header class="bar" data-running="{{ nav.running }}"{% if v.live %} data-live{% endif %}>
   <div class="where">
     <nav class="crumbs" aria-label="Where you are">{% block crumbs %}{% endblock %}</nav>
     <h1>{% block heading %}{% endblock %}</h1>

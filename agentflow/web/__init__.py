@@ -8,12 +8,11 @@ There is no sign-in. The server listens on this machine only, refuses other Host
 change (starting a flow, switching a schedule, checking a tool) only with a header that a page on another site cannot send.
 """
 import asyncio
-import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -36,7 +35,7 @@ class ScheduleRequest(BaseModel):
 
 
 def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = ("127.0.0.1", "localhost")) -> FastAPI:
-    engine, stale = settings.engine, settings.engine["stale_after_seconds"]  # the engine's timings, all from the settings
+    engine, stale = settings.internal, settings.internal["stale_after_seconds"]  # the engine's timings, all from the settings
     tasks: set[asyncio.Task] = set()
     errors: dict[str, str] = {}  # the last reason something could not go on, shown on its page; keys: flows/<name>, a run id
 
@@ -96,7 +95,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
     pages = Jinja2Templates(directory=HERE / "templates")
     pages.env.trim_blocks = pages.env.lstrip_blocks = True
     pages.env.filters["num"] = lambda n: f"{n:,}"
-    pages.env.globals["line_chars"] = settings.show["line_chars"]  # the page script cuts a log line's values to this
+    pages.env.globals["refresh"] = settings.internal["refresh_seconds"]  # how often a page of a run that is still going is fetched again
     pages.env.globals["static"] = lambda name: f"/static/{name}?v={int((HERE / 'static' / name).stat().st_mtime)}"  # a changed file is a new address, so no browser shows an old one
 
     @app.middleware("http")
@@ -137,7 +136,7 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
 
     def plain_file(folder: Path, path: str) -> PlainTextResponse:
         """One file of a folder, always as plain text, never run as a page."""
-        return PlainTextResponse(inside(folder, path).read_text(errors="replace")[:settings.show["raw_chars"]])
+        return PlainTextResponse(inside(folder, path).read_text(errors="replace")[:settings.internal["raw_chars"]])
 
     # ---- runs: the list, a run and its tabs, an item and its tabs ----
     @app.get("/", response_class=HTMLResponse)
@@ -263,30 +262,5 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
         if name not in installed(settings).names("tools"):
             raise HTTPException(404, f"no tool '{name}'")
         return (await check_tools(settings, store, only=name))[0]
-
-    @app.get("/api/events")
-    async def api_events(request: Request, run: str | None = None, item: str | None = None, after: int = 0, follow: bool = True):
-        """Replays events after a sequence number, then follows. The pages read this."""
-        last = int(request.headers.get("last-event-id") or after)
-
-        async def stream():
-            nonlocal last
-            quiet = 0.0  # seconds since the stream last said anything
-            while True:
-                rows = store.events(run, item, after=last, limit=engine["event_batch"])
-                for event in rows:
-                    last = event["seq"]
-                    yield f"id: {last}\ndata: {json.dumps(event)}\n\n"
-                if len(rows) == engine["event_batch"]:
-                    continue
-                if not follow or await request.is_disconnected():
-                    return
-                quiet = 0.0 if rows else quiet + engine["follow_seconds"]
-                if quiet >= engine["keepalive_seconds"]:
-                    quiet = 0.0
-                    yield ": still here\n\n"
-                await asyncio.sleep(engine["follow_seconds"])
-
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     return app

@@ -19,7 +19,7 @@ from unittest import mock
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
-from agentflow.workers.agents import ModelNotReady, build_model, file_tools, run_agent
+from agentflow.workers.agents import CLEARED, ModelNotReady, ToolErrors, build_model, file_tools, keep_in_context, run_agent
 from agentflow.cli import main
 from agentflow.plugins.graph import compile_flow
 from agentflow.records.history import earlier, earlier_file
@@ -67,7 +67,7 @@ class Pure(unittest.TestCase):
         self.assertEqual(graph.position({"stage": "c", "outcome": "interrupted"}), "c")
         for change, wanted in (({"id": "c", "next": "a"}, "A loop must use on_fail"), ({"id": "c", "next": "nope"}, "not a stage"),
                                ({"id": "a", "run": "x", "on_fail": "a"}, "needs something that can fail"), ({"id": "b", "done_when": "ok", "on_fail": "c"}, "comes later"),
-                               ({"id": "a", "run": "x", "next": "c"}, "stage b: nothing leads to it"), ({"id": "b", "done_when": "ok", "tries": 9}, "from 1 to 5"),
+                               ({"id": "a", "run": "x", "next": "c"}, "stage b: nothing leads to it"), ({"id": "b", "done_when": "ok", "tries": 0}, "1 or more"),
                                ({"id": "a"}, "the id is used twice")):
             changed = [change if s["id"] == change["id"] else s for s in stages] + ([change] if change == {"id": "a"} else [])
             self.assertTrue(any(wanted in e for e in compile_flow({"stages": changed}, DEFAULTS["limits"])[1]), (wanted, compile_flow({"stages": changed}, DEFAULTS["limits"])[1]))
@@ -82,6 +82,41 @@ class Pure(unittest.TestCase):
         self.assertEqual(next_due("weekdays 07:00", friday_8), datetime(2026, 11, 16, 7, 0))  # skips the weekend
         self.assertEqual(next_due("daily 07:00", friday_8), datetime(2026, 11, 14, 7, 0))
         self.assertEqual(next_due("daily 09:00", friday_8), datetime(2026, 11, 13, 9, 0))
+
+    def test_an_agent_is_told_of_a_failed_tool_and_old_results_are_cleared(self):
+        from pydantic_ai import Agent
+        from pydantic_ai.usage import RequestUsage
+
+        # a tool that breaks does not end the run: its error is the tool's answer, and the agent goes on
+        def broken() -> str:
+            raise ConnectionError("no route to the registry")
+
+        seen = []
+
+        def model(messages, info):
+            results = [p.content for m in messages if isinstance(m, ModelRequest) for p in m.parts if isinstance(p, ToolReturnPart)]
+            seen.extend(results)
+            return ModelResponse(parts=[TextPart("went on without it")] if results else [ToolCallPart("broken", {})])
+
+        done = asyncio.run(Agent(FunctionModel(model), tools=[broken], capabilities=[ToolErrors()]).run("go"))
+        self.assertEqual(done.output, "went on without it")
+        self.assertIn("error: the tool broken failed: ConnectionError: no route to the registry", seen[0])
+
+        # once a request has read more than the limit, all but the latest results are cleared; the calls stay
+        def history(read):
+            turns = []
+            for i in range(4):
+                turns += [ModelResponse(parts=[ToolCallPart("read_file", {"path": f"{i}.md"}, tool_call_id=str(i))], usage=RequestUsage(input_tokens=read)),
+                          ModelRequest(parts=[ToolReturnPart("read_file", f"text {i}", tool_call_id=str(i))])]
+            return turns
+
+        def results(messages):
+            return [p.content for m in messages if isinstance(m, ModelRequest) for p in m.parts]
+
+        self.assertEqual(results(keep_in_context(100, 2)(history(50))), ["text 0", "text 1", "text 2", "text 3"])
+        cleared = keep_in_context(100, 2)(history(500))
+        self.assertEqual(results(cleared), [CLEARED, CLEARED, "text 2", "text 3"])
+        self.assertEqual(sum(isinstance(m, ModelResponse) for m in cleared), 4)
 
     def test_a_plugin_markdown_file_is_shown_inert(self):
         out = show.md_to_html("# T\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1)) [y](https://example.com)")
@@ -133,7 +168,7 @@ class EndToEnd(Home):
         # what a run puts out is the flow's own: its finish script ran once, in the run's output folder, and wrote the report there
         run = self.store.one("SELECT * FROM runs WHERE id = ?", run_id)
         out = self.store.path(run) / "output"
-        self.assertEqual(sorted(p.name for p in out.iterdir()), ["SEC-1042.html", "SEC-1043.html", "SEC-1044.html", "SEC-1045.html", "index.html"])
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["SEC-1042.html", "SEC-1043.html", "SEC-1044.html", "SEC-1045.html", "index.html", "run.log"])
         self.assertIn("4 tickets: 2 triaged, 2 needs a person", (out / "index.html").read_text())
         self.assertIn("Raise acme-http", (out / "SEC-1042.html").read_text())
         ended = [e for e in self.store.events(run_id) if e["item"] is None]
@@ -157,13 +192,13 @@ class EndToEnd(Home):
         self.assertIn("2 triaged, 2 needs a person", (self.store.path(self.store.one("SELECT folder FROM runs WHERE id = ?", second)) / "output/index.html").read_text())
 
         # the engine does not look back, but a flow can: `agentflow history` is what its scripts call, and the asking run is left out
-        rows = earlier(self.store, "vuln-triage", "SEC-1044", self.settings.show["history_rows"], not_run=second)
+        rows = earlier(self.store, "vuln-triage", "SEC-1044", self.settings.internal["rows"], not_run=second)
         self.assertEqual([(r["run"], r["ended_as"], r["trial"]) for r in rows], [(run_id, "needs_person", False)])
         self.assertIn("no release or tag", rows[0]["reason"])
         self.assertEqual((rows[0]["folder"], rows[0]["output"]), (str(self.store.path(items["SEC-1044"]).resolve()), str(out.resolve())))
         self.assertIn("origin.md", rows[0]["files"])
-        self.assertEqual(len(earlier(self.store, "vuln-triage", None, self.settings.show["history_rows"])), 8)
-        self.assertIn("4.3.1", earlier_file(self.store, run_id, "SEC-1042", "fix.md", self.settings.limits["read_chars"]))
+        self.assertEqual(len(earlier(self.store, "vuln-triage", None, self.settings.internal["rows"])), 8)
+        self.assertIn("4.3.1", earlier_file(self.store, run_id, "SEC-1042", "fix.md", self.settings.internal["read_chars"]))
         with self.assertRaisesRegex(ValueError, "inside the work folder"):
             earlier_file(self.store, run_id, "SEC-1042", "../SEC-1043/fix.md", 100)
         # a script of the flow reaches the command by name, and is told its flow and its run
@@ -233,26 +268,32 @@ class EndToEnd(Home):
     def test_every_limit_is_a_setting(self):
         """The packaged defaults, then agentflow.yaml, then a flow's own `limits`. The code holds no number of its own."""
         self.assertEqual(self.settings.check(), [])
-        self.assertEqual((self.settings.limits, self.settings.engine, self.settings.show), (DEFAULTS["limits"], DEFAULTS["engine"], DEFAULTS["show"]))
+        self.assertEqual((self.settings.limits, self.settings.internal), (DEFAULTS["limits"], DEFAULTS["internal"]))
         flow_dir = self.settings.plugins / "flows/vuln-triage"
         flow = flow_dir / "flow.yaml"
-        # the platform's limit on model calls: an agent that needs a second call is stopped, and the item fails
+        # the platform's limit on model calls: an agent that needs a second call is stopped. That is a try that was not
+        # accepted, so the next try is told why; out of tries, the item is set aside for a person, with what the tries used
         self.settings.limits["model_calls"] = 1
         run_id = asyncio.run(try_flow(self.settings, self.store, "vuln-triage", "SEC-1042"))
-        self.assertEqual(self.items(run_id)["SEC-1042"]["ended_as"], "failed")
-        self.assertIn("UsageLimitExceeded", self.items(run_id)["SEC-1042"]["reason"])
+        item = self.items(run_id)["SEC-1042"]
+        self.assertEqual(item["ended_as"], "needs_person")
+        self.assertIn("analyse: not accepted after 2 of 2 tries. Last reason from engine: the try stopped without an answer: the run used all of its 1 model requests", item["reason"])
+        tries = self.store.q("SELECT n, outcome, model_calls, cost_usd FROM attempts WHERE run_id = ? AND stage = 'analyse' ORDER BY n", run_id)
+        self.assertEqual([(t["n"], t["outcome"], t["model_calls"], t["cost_usd"]) for t in tries], [(1, "rejected", 1, 0), (2, "rejected", 1, 0)])
+        self.assertIn("- attempt 1, engine: the try stopped without an answer", (self.store.path(item) / "attempts/analyse-2.prompt.md").read_text())
+        self.assertTrue(self.store.usage(run_id)["cost_known"])
         self.settings.limits["model_calls"] = DEFAULTS["limits"]["model_calls"]
         # how much of a file an agent is given
         (self.home / "long.txt").write_text("0123456789")
-        read = next(t for t in file_tools(self.home, False, {"read_chars": 4}) if t.name == "read_file")
+        read = next(t for t in file_tools(self.home, False, mock.Mock(internal={"read_chars": 4})) if t.name == "read_file")
         self.assertEqual(read.function("long.txt"), "0123")
-        # the tries of a stage that names none, and the most a stage may ask for
+        # the tries of a stage that names none, and a stage's own
         self.settings.limits["tries"] = 4
         graph = installed(self.settings).graph("vuln-triage")
         self.assertEqual((graph.tries("analyse"), graph.default_tries), (4, 4))
-        flow.write_text(flow.read_text().replace("  - id: fix\n", "  - id: fix\n    tries: 9\n"))
-        self.assertIn("stage fix: 'tries' must be a number from 1 to 5", installed(self.settings).check_flow("vuln-triage"))
-        flow.write_text(flow.read_text().replace("    tries: 9\n", "    tries: 1\n"))
+        flow.write_text(flow.read_text().replace("  - id: fix\n", "  - id: fix\n    tries: 0\n"))
+        self.assertIn("stage fix: 'tries' must be a number, 1 or more", installed(self.settings).check_flow("vuln-triage"))
+        flow.write_text(flow.read_text().replace("    tries: 0\n", "    tries: 1\n"))
         self.assertEqual(installed(self.settings).graph("vuln-triage").tries("fix"), 1)
         # a flow's own limit wins: its scripts get one second
         (flow_dir / "scripts/gather.sh").write_text("#!/bin/sh\nsleep 30\n")
@@ -265,12 +306,11 @@ class EndToEnd(Home):
         flow.write_text(flow.read_text() + "  surprise: 1\n  model_calls: none\n")
         errs = installed(self.settings).check_flow("vuln-triage")
         self.assertTrue({"limits: unknown key 'surprise'", "limits: model_calls must be a number above 0"} <= set(errs), errs)
-        with (self.home / "agentflow.yaml").open("a") as f:
-            f.write("engine:\n  heartbeat_seconds: 90\n  surprise: 1\nshow:\n  rows: many\n")
+        yaml = self.home / "agentflow.yaml"
+        yaml.write_text(yaml.read_text().replace("  tries: 2 ", "  tries: many\n  heartbeat_seconds: 90\n  model_calls: 7 "))
         changed = Settings(self.home)
-        self.assertEqual(changed.check(), ["engine: unknown key 'surprise'", "show: rows must be a number above 0",
-                                           "engine: stale_after_seconds must be more than heartbeat_seconds, or a working run looks interrupted"])
-        self.assertEqual((changed.engine["heartbeat_seconds"], changed.engine["poll_seconds"]), (90, DEFAULTS["engine"]["poll_seconds"]))
+        self.assertEqual(changed.check(), ["limits: unknown key 'heartbeat_seconds'", "limits: tries must be a number above 0"])  # the engine's mechanics are not settings
+        self.assertEqual((changed.limits["model_calls"], changed.internal["heartbeat_seconds"]), (7, DEFAULTS["internal"]["heartbeat_seconds"]))
 
     def test_reviewer_agent_and_early_end(self):
         flow_dir = self.settings.plugins / "flows/vuln-triage"

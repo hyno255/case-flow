@@ -18,7 +18,7 @@ async def tool_health(settings, live, name: str) -> tuple[bool, str]:
     if errs:
         return False, f"tool.yaml: {errs[0]}"
     spec, folder, env = live.tool(name), live.dir("tools", name), {}
-    seconds, line = settings.engine["health_seconds"], settings.show["line_chars"]
+    seconds, line = settings.internal["health_seconds"], settings.internal["line_chars"]
     if "mcp" in spec:
         try:
             offered = await asyncio.wait_for(plugin_tool(settings, live, name, folder, env).offered(seconds), seconds)

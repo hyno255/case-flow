@@ -10,7 +10,6 @@ MODEL_DEFAULTS = {"provider": "openai", "name": "", "api_key_env": "OPENAI_API_K
 MODEL_KEYS = set(MODEL_DEFAULTS) | {"base_url"}
 HARNESS_KEYS = {"harness", "name", "api_key_env"}  # a model entry whose work a CLI does: which CLI, which model, and a key if not its own sign-in
 DEFAULTS = yaml.safe_load(Path(__file__).with_name("defaults.yaml").read_text())  # every limit and its default; no number lives in the code
-SECTIONS = tuple(DEFAULTS)  # limits, engine, show
 MAY_BE_ZERO = {"cost_per_run_usd"}
 
 
@@ -44,8 +43,9 @@ class Settings:
         raw = (yaml.safe_load(file.read_text()) or {}) if file.is_file() else {}
         self.models = raw.get("models") or {}   # named models; a flow, a stage or an agent picks one by name
         self.default_model = raw.get("model")   # the name used where nothing picks one
-        self.written = {s: raw.get(s) or {} for s in SECTIONS}  # what agentflow.yaml itself sets; the rest are defaults
-        self.limits, self.engine, self.show = ({**DEFAULTS[s], **(self.written[s] if isinstance(self.written[s], dict) else {})} for s in SECTIONS)
+        self.written = raw.get("limits") or {}  # the limits agentflow.yaml itself sets; the rest are defaults
+        self.limits = {**DEFAULTS["limits"], **(self.written if isinstance(self.written, dict) else {})}
+        self.internal = DEFAULTS["internal"]    # the engine's own mechanics, which are not settings
         self.plugins = self.home / "plugins"
         self.data = self.home / "data"
         self.stand_in = False  # use the scripted model; set by --stand-in and by tests
@@ -66,21 +66,15 @@ class Settings:
 
     def proc(self, limits: dict | None = None) -> dict:
         """How a script is run: its time limit, and how the engine watches and stops it. For run_proc."""
-        return {"timeout": (limits or self.limits)["script_seconds"], "grace": self.engine["stop_grace_seconds"], "poll": self.engine["poll_seconds"]}
+        return {"timeout": (limits or self.limits)["script_seconds"], "grace": self.internal["stop_grace_seconds"], "poll": self.internal["poll_seconds"]}
 
     def check(self) -> list[str]:
         """What is wrong in agentflow.yaml itself."""
-        errs = [e for s in SECTIONS for e in check_numbers(s, self.written[s])]
-        if self.limits["tries"] > self.limits["max_tries"]:
-            errs.append("limits: tries cannot be more than max_tries")
-        if self.engine["stale_after_seconds"] <= self.engine["heartbeat_seconds"]:
-            errs.append("engine: stale_after_seconds must be more than heartbeat_seconds, or a working run looks interrupted")
+        errs = check_numbers("limits", self.written)
         for name, m in self.models.items():
             errs += model_errors(m, f"models: {name}")
         if self.default_model not in self.models:
             errs.append("model: name one of the entries under 'models' as the default")
-        elif self.harness_of(self.default_model):
-            errs.append("model: the default also runs reviewers, which stay in the engine; name a model without 'harness'")
         return errs
 
     def model(self, spec=None) -> dict:

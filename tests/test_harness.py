@@ -3,9 +3,11 @@ no sign-in, no network, no cost. What a CLI can do wrong is played by small scri
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -14,11 +16,11 @@ from genai_prices import Usage, calc_price
 from agentflow.records import trace
 from agentflow.workers import harness
 from agentflow.workers.agents import ModelNotReady, check_ready
-from agentflow.workers.harness import CLIS, Cli, CliFailed, CliStopped, cli_version, run_cli
+from agentflow.workers.harness import CLIS, Cli, CliFailed, CliStopped, Job, cli_note, cli_version, run_cli, tool_servers
 from agentflow.plugins.registry import installed
 from agentflow.engine.recovery import request_cancel
 from agentflow.engine.runner import start_flow
-from support import Home, make_app
+from support import ROOT, Home, make_app
 
 FLOW = "plugins/flows/vuln-triage/flow.yaml"
 CODEX_SAID = ('{"type":"thread.started","thread_id":"t1"}\n'
@@ -78,7 +80,7 @@ class HandedOver(Home):
         self.assertEqual((usage["cost_known"], usage["cost_usd"]), (True, 0))
 
         # the trace: the CLI's run is one span of the try, with its tokens, and a link to what it printed
-        tree = trace.build(self.store, self.store.run(run_id), self.settings.show, "SEC-1042", folder=work)
+        tree = trace.build(self.store, self.store.run(run_id), self.settings.internal, "SEC-1042", folder=work)
         clis = [s for s in trace.walk(tree["root"]) if s["kind"] == "cli"]
         self.assertEqual([(s["name"], s["cli_runs"], s["cost_note"]) for s in clis], [(name, 1, "free")] * 2)
         self.assertEqual(clis[0]["links"], [("output", f"attempts/analyse-1.{name}.jsonl", f"/runs/{run_id}/items/SEC-1042/files/attempts/analyse-1.{name}.jsonl")])
@@ -132,37 +134,58 @@ class HandedOver(Home):
         self.assertEqual([t["outcome"] for t in self.store.q("SELECT outcome FROM attempts WHERE run_id = ? AND stage = 'analyse'", run_id)], ["cancelled"] * 4)
         self.assertFalse(self.store.usage(run_id)["cost_known"])  # a CLI that was stopped used its model, and never said how much
 
-    def test_check_says_what_a_cli_cannot_be_given(self):
+    def test_a_cli_gets_the_mcp_tools_and_can_review(self):
         self.hand_over("codex")
         flow, agent = self.home / FLOW, self.home / "plugins/agents/origin-analyst/AGENT.md"
 
-        def errors() -> list[str]:
-            return installed(self.settings).check_flow("vuln-triage")
-
-        # a tool that is an MCP server
+        # a tool that is an MCP server goes to the CLI as an MCP server of that one run, beside the CLI's own tools
         tool = self.home / "plugins/tools/notes"
-        tool.mkdir()
+        shutil.copytree(ROOT / "tests/fixtures/mcp-notes", tool)
         (tool / "tool.yaml").write_text("description: Notes kept beside the item.\nmcp: [python3, ./server.py]\n")
         agent.write_text(agent.read_text().replace("tools: [sbom-query, deps-why]", "tools: [sbom-query, deps-why, notes]"))
-        self.assertEqual(errors(), ["stage analyse: its work goes to the codex CLI, which cannot use the tool notes: it is an MCP server, not a command"])
-        agent.write_text(agent.read_text().replace(", notes]", "]"))
-        self.assertEqual(errors(), [])
+        live = installed(self.settings)
+        self.assertEqual(live.check_flow("vuln-triage"), [])
+        servers = tool_servers(live, ["sbom-query", "notes"], {"AGENTFLOW_RUN": "r1"})
+        self.assertEqual(servers, (("notes", ["python3", str((tool / "server.py").resolve())], {"AGENTFLOW_RUN": "r1"}),))
+        self.assertIn("MCP servers you are given", cli_note([], servers))
+        codex = CLIS["codex"].args("m", Path("last.md"), Job(servers=servers))
+        for text in ('mcp_servers.notes.command="python3"', f'mcp_servers.notes.args=["{(tool / "server.py").resolve()}"]', 'mcp_servers.notes.env={"AGENTFLOW_RUN" = "r1"}', "workspace-write"):
+            self.assertIn(text, codex)
+        claude = CLIS["claude"].args("m", Path("last.md"), Job(commands=("/bin/tool",), servers=servers))
+        self.assertEqual(json.loads(claude[claude.index("--mcp-config") + 1])["mcpServers"]["notes"]["command"], "python3")
+        self.assertEqual(claude[claude.index("--allowedTools") + 1:], ["Bash(/bin/tool *)", "mcp__notes"])
 
-        # reviewers stay in the engine, so neither a flow's model nor a reviewer's can name a CLI
+        # a reviewer on a CLI reads only, and answers in the shape it is given
+        schema = self.home / "schema.json"
+        schema.write_text("{}")
+        review = Job(schema=schema, write=False)
+        self.assertIn("read-only", CLIS["codex"].args("m", Path("last.md"), review))
+        self.assertIn("--output-schema", CLIS["codex"].args("m", Path("last.md"), review))
+        claude = CLIS["claude"].args("m", Path("last.md"), review)
+        self.assertEqual((claude[claude.index("--permission-mode") + 1], claude[claude.index("--json-schema") + 1]), ("default", "{}"))
+        self.assertEqual(CLIS["claude"].read([{"type": "result", "result": "", "structured_output": {"passed": True}}])["text"], '{"passed": true}')
+
+        # the flow's model on a CLI: every stage and every reviewer goes to it, and the items end the same
+        agent.write_text(agent.read_text().replace(", notes]", "]"))
         flow.write_text(flow.read_text().replace("source: security-tickets\n", "source: security-tickets\nmodel: on-cli\n"))
-        self.assertEqual(errors(), ["model: the flow's model also runs its reviewers, which stay in the engine; name the codex model on a stage or an agent"])
-        flow.write_text(flow.read_text().replace("source: security-tickets\nmodel: on-cli\n", "source: security-tickets\n").replace(
-            "  - id: fix\n", "  - id: fix\n    review: origin-analyst\n"))
-        agent.write_text(agent.read_text().replace("tools: [sbom-query, deps-why]\n", "tools: [sbom-query, deps-why]\nmodel: on-cli\n"))
-        self.assertEqual(errors(), ["stage fix: review origin-analyst: its model runs on a CLI; a reviewer runs in the engine"])
+        self.assertEqual(installed(self.settings).check_flow("vuln-triage"), [])
+        run_id = asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))
+        items = self.items(run_id)
+        self.assertEqual({k: v["ended_as"] for k, v in items.items()},
+                         {"SEC-1042": "done", "SEC-1043": "done", "SEC-1044": "needs_person", "SEC-1045": "needs_person"})
+        work = self.store.path(items["SEC-1042"])
+        for file in ("attempts/analyse-review-2.codex.jsonl", "attempts/analyse-review-2.codex.schema.json", "attempts/report-1.codex.jsonl", "attempts/report-review-1.codex.md"):
+            self.assertTrue((work / file).is_file(), file)
+        said = self.store.q("SELECT by, passed FROM verdicts WHERE run_id = ? AND item_id = 'SEC-1042' AND stage = 'report'", run_id)
+        self.assertEqual([(v["by"], v["passed"]) for v in said], [("checker", 1)])
+        self.assertEqual(self.store.q("SELECT type FROM events WHERE run_id = ? AND type IN ('model_call', 'tool_call')", run_id), [])  # nothing ran in the engine
 
         # agentflow.yaml: an entry on a CLI has three keys, names a CLI the engine knows, and is not the default
         self.settings.models["odd"] = {"harness": "nope", "name": "m", "api": "chat"}
         self.settings.models["bare"] = {"harness": "claude"}
-        self.settings.default_model = "on-cli"
+        self.settings.default_model = "on-cli"  # the default may be on a CLI too
         self.assertEqual(self.settings.check(), ["models: odd: unknown key 'api'; a model on a CLI takes api_key_env, harness, name",
-                                                 "models: odd: no harness named 'nope'; the engine knows codex, claude", "models: bare: missing 'name'",
-                                                 "model: the default also runs reviewers, which stay in the engine; name a model without 'harness'"])
+                                                 "models: odd: no harness named 'nope'; the engine knows codex, claude", "models: bare: missing 'name'"])
         self.settings.stand_in = False
         self.assertEqual((self.settings.model_label("on-cli"), self.settings.harness_of("on-cli"), self.settings.harness_of("luna"), self.settings.harness_of("gone")),
                          ("codex CLI · gpt-6-luna", "codex", None, None))
@@ -198,7 +221,7 @@ class OneRun(Home):
         exe = self.home / "fake-cli"
         exe.write_text("#!/bin/sh\n" + script)
         exe.chmod(0o755)
-        fake = Cli(str(exe), lambda model, last, commands: [model, str(last), *commands], CLIS[like].read, key="FAKE_KEY", prices=CLIS[like].prices)
+        fake = Cli(str(exe), lambda model, last, job: [model, str(last), *job.commands], CLIS[like].read, key="FAKE_KEY", prices=CLIS[like].prices)
         with mock.patch.dict(CLIS, {"fake": fake}):
             return asyncio.run(run_cli(self.settings, {"harness": "fake", "name": "gpt-6-luna", **(model or {})}, "Instructions.", "Prompt.", self.work,
                                        self.work / "attempts/a-1.fake.jsonl", self.work / "attempts/a-1.fake.md", {"AGENTFLOW_ITEM_ID": "SEC-1"},
@@ -248,7 +271,7 @@ class OneRun(Home):
         self.assertIn("boom", (self.work / "attempts/a-1.fake.jsonl").read_text())  # what it printed is kept either way
         with self.assertRaisesRegex(CliFailed, "fake ended without an answer; what it printed is in a-1.fake.jsonl"):
             self.run_as("codex", "echo 'no JSON here'")
-        long = self.settings.limits["error_chars"]
+        long = self.settings.internal["error_chars"]
         with self.assertRaises(CliFailed) as failed:
             self.run_as("codex", f"head -c {long * 3} /dev/zero | tr '\\0' 'x'; echo ' the end'; exit 1")
         self.assertEqual((len(str(failed.exception)), str(failed.exception).endswith("the end")), (long, True))  # the reason keeps the end, within its size

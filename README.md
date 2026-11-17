@@ -112,7 +112,7 @@ the items, or a first stage script exits with 78 to end an item at once.
 
 ### What a run puts out
 
-Every run has an `output/` folder, and the flow fills it; the engine only lists and serves it:
+Every run has an `output/` folder, and the flow fills it. The engine lists and serves it, and keeps one file of its own there, `run.log`:
 
 ```yaml
 # a flow.yaml
@@ -124,6 +124,8 @@ finish: scripts/report.py   # optional: runs once, when every item of the run ha
 - Every script of a run is told `AGENTFLOW_OUTPUT`, the same folder, so a stage script can write there too.
 - The run's page lists the folder under Output, and serves each file at `/runs/<run>/output/<file>`. The pages are the flow's, not the engine's: they are served sandboxed.
 - A `finish` script that fails does not fail the run; the run's page says why. A cancelled run skips it.
+- `run.log` has one line for each thing the run did: a stage started, a tool called, a try rejected and why, an item ended.
+  It is written as the run goes, so opening it again shows how far the run is. The pages of a run that is still going are fetched again every few seconds; nothing is streamed.
 
 The example flow's `scripts/report.py` writes an index and one page per ticket this way.
 
@@ -168,14 +170,14 @@ and a failing tool is named on every flow whose agents use it.
 
 ## A stage done by Codex or Claude Code
 
-The engine's own harness runs a stage's agent in its process. A model entry with `harness:` hands the work of a stage to a
-coding CLI on the same machine instead. The engine starts the CLI in the item's work folder with the instructions and the
-prompt on its stdin, waits, and keeps what it printed. The check script and the reviewer then judge the files, as for any other try.
+A flow only names its steps. Who does a step, the agent or its reviewer, is a choice of model: an entry with `provider:` runs
+in the engine's own runtime, an entry with `harness:` hands the step to a coding CLI on the same machine. The engine starts
+the CLI in the item's work folder with the instructions and the prompt on its stdin, waits, and keeps what it printed.
 
 ```yaml
 # agentflow.yaml
 models:
-  luna:       {provider: openai, name: gpt-6-luna}                             # the engine's own harness
+  luna:       {provider: openai, name: gpt-6-luna}                             # the engine's own runtime
   luna-codex: {harness: codex, name: gpt-6-luna, api_key_env: OPENAI_API_KEY}  # Codex, handed this key
   sonnet-cc:  {harness: claude, name: sonnet}                                  # Claude Code, on its own sign-in
 ```
@@ -189,11 +191,13 @@ models:
 
 - `harness` is `codex` or `claude`. With `api_key_env` the CLI is handed that key; without it the CLI uses its own sign-in,
   which a container does not have.
-- A stage or an agent picks such a model. A flow's own `model:` and a reviewer's cannot, because reviewers run in the engine.
+- A flow, a stage, an agent or a reviewer picks such a model, and so can `default_model`. A reviewer on a CLI works read-only
+  and gives its verdict in the CLI's structured output (`--json-schema` for Claude Code, `--output-schema` for Codex).
 - The trace shows the CLI's run as one span with its seconds, tokens and cost. Everything the CLI printed is kept as
   `attempts/<stage>-<try>.<cli>.jsonl` in the item's folder. Claude Code reports its cost; Codex reports tokens, which are priced from the price list.
-- The agent's script tools are named to the CLI as commands. A tool that is an MCP server cannot be used on such a stage,
-  and `check` says so.
+- The agent's tools reach the CLI in the CLI's own way. A script tool is named to it as a command. A tool that is an MCP server
+  is registered with it for that run: `--mcp-config` for Claude Code, `-c mcp_servers.<name>…` for Codex. The MCP servers the
+  CLI has from its own configuration stay, so both kinds work side by side.
 - To set an item aside for a person, the CLI writes `needs-person.md`.
 - The item's `minutes_per_item` is the CLI's time limit, and cancelling the run stops it.
 - `--stand-in` starts a stand-in CLI in its place, which does what the flow's `stand_in` script says: no sign-in, no cost.
@@ -201,40 +205,45 @@ models:
 `agentflow check` says whether each CLI a model entry names is installed. The image has Codex and Claude Code at fixed versions
 (see the `Dockerfile`).
 
-## Limits and timings
+## When a try goes wrong
 
-The code holds no limit of its own. Every one is a key in `agentflow.yaml`, and the Settings page lists them all
-with a mark on those left at their default (`agentflow/defaults.yaml`).
+A try that goes wrong is not the end of the item. The agent, or the next try, is told what happened and acts on it:
+
+| What happened | What the engine does |
+|---|---|
+| A tool fails or runs out of time | The error is the tool's answer. The agent reads it and goes another way, in the same try. |
+| The model cannot be reached | The model client tries the request again by itself. If that does not help, the try stops. |
+| The answer is cut off at the output limit, the run is out of `model_calls`, a CLI exits with an error | The try stops. |
+| A try stopped | It counts as a rejected try. The next try gets the reason as feedback, the same way as a reviewer's. |
+| The stage is out of `tries` | The item is set aside for a person, with the last reason. |
+
+A stage script that fails still fails the item: a script has nobody to tell.
+
+An agent's context is kept in bounds: once a request reads more than `context_tokens`, the answers of its older tool calls
+are cleared (the calls stay, so it can ask again). Codex and Claude Code compact their own context.
+
+The cost of a run is the sum of what its requests reported. When a try was cut short before it reported, the figure is
+still shown as a plain amount, and its tooltip says that one try is missing.
+
+## Limits
+
+Only the limits of a run and of the agent loop are settings. What happens inside a flow is the flow's own business.
 
 ```yaml
 # agentflow.yaml
-limits:                  # what one run may use; a flow.yaml may set its own `limits` with the same keys
-  at_once: 4
-  minutes_per_item: 10
-  cost_per_run_usd: 2.00
-  script_seconds: 120    # one script: a stage's, a check, a tool, a source's fetch
-  model_calls: 20        # one agent run
+limits:                  # a flow.yaml may set its own `limits` with the same keys
+  at_once: 4             # items worked on at the same time
+  minutes_per_item: 10   # one item, all its stages together
+  cost_per_run_usd: 2.00 # the run stops starting stages at this cost
+  script_seconds: 120    # one script or one tool call
+  model_calls: 20        # model requests in one agent run
+  context_tokens: 100000 # past this, an agent's older tool results are cleared
   tries: 2               # a stage that names no `tries`
-  max_tries: 5
-  read_chars: 20000      # of a file given to an agent
-  tool_chars: 8000       # of a tool's answer given to an agent
-  reason_chars: 2000     # of a failed check's output, told to the next try
-  error_chars: 500
-  event_chars: 1500
-engine:                  # the engine's own timings, in seconds
-  health_every_seconds: 300
-  stale_after_seconds: 60
-show:                    # how much the pages and the command line show
-  rows: 50
 ```
 
-| Section | Keys |
-|---|---|
-| `limits` | as above |
-| `engine` | `health_seconds`, `health_every_seconds`, `health_stale_seconds`, `stop_grace_seconds`, `poll_seconds`, `heartbeat_seconds`, `stale_after_seconds`, `schedule_every_seconds`, `watch_every_seconds`, `follow_seconds`, `keepalive_seconds`, `event_batch` |
-| `show` | `rows`, `line_chars`, `label_chars`, `fact_chars`, `block_chars`, `prompt_chars`, `file_chars`, `raw_chars` |
-
-`check` reports an unknown key or a value that is not a number above 0.
+The Settings page lists these seven with a mark on those left at their default. `check` reports an unknown key or a value
+that is not a number above 0. The engine's own mechanics (heartbeats, how much text a page shows) are in the `internal`
+section of `agentflow/defaults.yaml` so that the code holds no number; they are not settings.
 
 ## Where things are
 
@@ -243,7 +252,7 @@ data/db/agentflow.db                   the store
 data/fetches/<date>-<n>-<source>/      what one fetch wrote
 data/runs/<date>-<run id>/plugins/     the plugin files as the run saw them
                           items/<id>/  each item's work folder, with events.jsonl
-                          output/      what the flow's scripts put out for this run; the engine only serves it
+                          output/      what the flow's scripts put out for this run, and run.log
 ```
 
 ## Develop

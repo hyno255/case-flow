@@ -34,7 +34,7 @@ async def fetch(settings, registry: Registry, source: str, out: Path) -> list[di
     env = {"AGENTFLOW_HOME": str(settings.home), "AGENTFLOW_OUT": str(out.resolve())}
     code, said = await run_proc([str((folder / spec["run"]).resolve())], cwd=folder, env=env, **settings.proc())
     if code != 0:
-        raise FetchFailed(f"{spec['run']} exited with code {code}: {said[-settings.limits['error_chars']:]}")
+        raise FetchFailed(f"{spec['run']} exited with code {code}: {said[-settings.internal['error_chars']:]}")
     if not (out / spec["output"]).is_file():
         raise FetchFailed(f"{spec['run']} did not write {spec['output']} into its output folder (AGENTFLOW_OUT)")
     try:
@@ -84,7 +84,7 @@ async def execute(settings, store, run_id: str, todo: list[tuple[dict, Path, str
     async def heart() -> None:
         while True:
             store.beat(run_id)
-            await asyncio.sleep(settings.engine["heartbeat_seconds"])
+            await asyncio.sleep(settings.internal["heartbeat_seconds"])
 
     alive = asyncio.create_task(heart())
     gate = asyncio.Semaphore(limits["at_once"])
@@ -100,7 +100,7 @@ async def execute(settings, store, run_id: str, todo: list[tuple[dict, Path, str
             try:
                 await run_item(ctx, start_at)
             except Exception as e:  # an engine fault ends this item, not the run
-                store.end_item(run_id, item["id"], "failed", f"engine error: {type(e).__name__}: {str(e)[:limits['error_chars']]}")
+                store.end_item(run_id, item["id"], "failed", f"engine error: {type(e).__name__}: {str(e)[:settings.internal['error_chars']]}")
 
     try:
         await asyncio.gather(*(one(*t) for t in todo))
@@ -124,7 +124,7 @@ async def run_finish(settings, store, snap: Registry, run, limits: dict) -> None
                        "item": json.loads(it["payload"])} for it in store.items(run["id"])]}
     code, said, seconds = await run_script(settings, store, run["id"], flow_dir / script, out, json.dumps(told),
                                            run_told(settings, flow_dir, run["flow"], run["id"], out, trial), limits)
-    store.emit(run["id"], None, None, "finish_ended", script=script, exit_code=code, seconds=seconds, output=said[-limits["event_chars"]:])
+    store.emit(run["id"], None, None, "finish_ended", script=script, exit_code=code, seconds=seconds, output=said[-settings.internal["event_chars"]:])
 
 
 def finish(store, run_id: str) -> None:

@@ -9,7 +9,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from agentflow.records import trace
-from agentflow.settings import Settings
+from agentflow.settings import DEFAULTS, Settings
 from support import CHANGE, ROOT, Home, make_app
 
 FLOW = "plugins/flows/vuln-triage/flow.yaml"
@@ -21,8 +21,8 @@ DESIGN_PAGES = ["/flows", "/flows/vuln-triage", "/flows/vuln-triage/files", "/fl
 
 def run_pages(run_id: str, items=ITEMS) -> list[str]:
     """Every page and tab of a run and of its items."""
-    urls = [f"/runs/{run_id}{tab}" for tab in ("", "/output", "/trace", "/log", "/flow")]
-    return urls + [f"/runs/{run_id}/items/{i}{tab}" for i in items for tab in ("", "/trace", "/log")]
+    urls = [f"/runs/{run_id}{tab}" for tab in ("", "/output", "/trace", "/flow")]
+    return urls + [f"/runs/{run_id}/items/{i}{tab}" for i in items for tab in ("", "/trace")]
 
 
 def spans(view: dict, kind: str | None = None) -> list[dict]:
@@ -112,16 +112,16 @@ class Runs(Site):
             for folder in (self.settings.data, self.settings.plugins, self.settings.home / "agentflow.yaml"):
                 self.assertIn(f'<code class="path" title="{folder}">', c.get("/settings").text)
 
-            # the Output tab lists what the flow put in the run's output folder; the engine wrote none of it
+            # the Output tab lists what the flow put in the run's output folder; next to it the engine keeps the run's log
             out = c.get(f"/api/runs/{run_id}/output").json()
-            self.assertEqual([f["path"] for f in out["files"]], ["SEC-1042.html", "SEC-1043.html", "SEC-1044.html", "SEC-1045.html", "index.html"])
+            self.assertEqual([f["path"] for f in out["files"]], ["SEC-1042.html", "SEC-1043.html", "SEC-1044.html", "SEC-1045.html", "index.html", "run.log"])
             self.assertEqual((out["finish"], out["files"][0]["href"], out["more"]), ("scripts/report.py", f"/runs/{run_id}/output/SEC-1042.html", 0))
             self.assertIn(f'<a href="/runs/{run_id}/output/index.html" target="_blank"', c.get(f"/runs/{run_id}/output").text)
 
             # the flow as this run saw it, with what the run did at each stage
             nodes = {n["id"]: n for n in c.get(f"/api/runs/{run_id}/flow").json()["graph"]["nodes"]}
             self.assertEqual(list(nodes), [":source", "gather", "analyse", "fix", "report", ":end"])
-            self.assertEqual(nodes[":end"]["lines"], ["scripts/report.py", "5 files"])
+            self.assertEqual(nodes[":end"]["lines"], ["scripts/report.py", "6 files"])
             self.assertEqual((nodes["analyse"]["state"], nodes["analyse"]["lines"][-2:]), ("done", ["3 passed", "7 tries"]))  # SEC-1045 asked for a person at analyse
             self.assertEqual((nodes[":end"]["state"], nodes[":end"]["href"]), ("done", f"/runs/{run_id}/output"))  # a run ends at its output folder
             stages = c.get(f"/api/runs/{run_id}/flow").json()["stages"]
@@ -136,10 +136,13 @@ class Runs(Site):
             for tab in ("", "/trace"):
                 self.assertIn('<p class="alert">libexample-png is in neither dependency-tree.json nor image-sbom.json', c.get(f"/runs/{run_id}/items/SEC-1045{tab}").text)
 
-            # a finished run's pages hold no stream open; the log replays and ends
-            self.assertNotIn("data-events", c.get(f"/runs/{run_id}/trace").text)
-            self.assertIn(f'data-events="/api/events?run={run_id}&after=0&follow=false"', c.get(f"/runs/{run_id}/log").text)
-            self.assertIn("scripts/gather.sh", c.get(f"/api/runs/{run_id}/log").json()["who"]["gather"])  # who a log line is by when its event does not say
+
+            # a finished run's pages are not fetched again, and there is no log tab and no event stream: the run's lines are a file in its output
+            self.assertNotIn("data-refresh", c.get(f"/runs/{run_id}/trace").text)
+            self.assertEqual((c.get(f"/runs/{run_id}/log").status_code, c.get(f"/api/events?run={run_id}").status_code), (404, 404))
+            lines = c.get(f"/runs/{run_id}/output/run.log").text
+            for text in ("run       started: vuln-triage, 4 items", "SEC-1042  analyse  try 2  origin-analyst  (with feedback)", "SEC-1045  ended: needs_person", "run       ended"):
+                self.assertIn(text, lines)
 
     def test_the_trace_names_who_ran_what(self):
         self.edit_flow("    check: scripts/chain-cites-files.py\n", "    check: scripts/chain-cites-files.py\n    on_fail: gather\n")
@@ -199,8 +202,8 @@ class Runs(Site):
             self.assertIn('<section class="sp-info" data-for="SEC-1042" hidden>', picked)
             self.assertIn('<section class="sp-info" data-for="SEC-1042">', page)
 
-            # the log stream carries what the log shows: who, answers of tools and output of scripts
-            events = [json.loads(line[6:]) for line in c.get(f"/api/events?run={run_id}&follow=false").text.splitlines() if line.startswith("data: ")]
+            # the events keep what the trace shows: who, answers of tools and output of scripts
+            events = self.store.events(run_id)
             self.assertTrue({"preview", "seconds", "call", "agent"} <= set(next(e for e in events if e["type"] == "tool_result")))
             self.assertIn("fetch_seconds", next(e for e in events if e["type"] == "run_started"))
             self.assertEqual({e["to"] for e in events if e["type"] == "sent_back"}, {"gather"})
@@ -212,7 +215,7 @@ class Runs(Site):
             self.store.db.execute("UPDATE runs SET ended = NULL, beat = ? WHERE id = ?", (time.time(), run_id))
             self.store.db.execute("UPDATE items SET ended_at = NULL, ended_as = NULL WHERE run_id = ? AND item_id = 'SEC-1042'", (run_id,))
             self.store.db.execute("UPDATE attempts SET outcome = NULL, ended = NULL WHERE run_id = ? AND item_id = 'SEC-1042' AND stage = 'report'", (run_id,))
-            root = trace.build(self.store, self.store.run(run_id), self.settings.show, live=True)["root"]
+            root = trace.build(self.store, self.store.run(run_id), self.settings.internal, live=True)["root"]
             item = next(s for s in root["children"] if s["name"] == "SEC-1042")
             stages = {s["name"]: s for s in item["children"]}
             self.assertEqual((stages["gather"]["state"], stages["report"]["state"]), ("ok", "run"))
@@ -221,19 +224,16 @@ class Runs(Site):
             self.assertGreater(stages["report"]["end"], stages["fix"]["end"])  # the open try runs up to now
             self.assertAlmostEqual(stages["report"]["end"], root["end"], delta=1)
 
-            # its pages follow the event stream, one stream each, and say what can be done
+            # its pages are fetched again every few seconds, and say what can be done
             page = c.get(f"/runs/{run_id}").text
-            for text in (f'data-events="/api/events?run={run_id}&after=', ">running<", f'data-post="/api/runs/{run_id}/cancel"', '<span class="run">1 running</span>'):
+            for text in (f'data-refresh="{self.settings.internal["refresh_seconds"]}"', " data-live>", ">running<", f'data-post="/api/runs/{run_id}/cancel"', '<span class="run">1 running</span>'):
                 self.assertIn(text, page)
             self.assertNotIn(f"/api/runs/{run_id}/resume", page)
             self.assertIn('title="running now">1<', page)  # the sidebar counts it
-            log = c.get(f"/runs/{run_id}/log").text
-            self.assertEqual(log.count("data-events="), 1)
-            self.assertIn(f'data-events="/api/events?run={run_id}&after=0"', log)
             flow = {n["id"]: n for n in c.get(f"/api/runs/{run_id}/flow").json()["graph"]["nodes"]}
             self.assertEqual((flow["report"]["state"], flow["report"]["lines"][-2]), ("now", "1 passed · 1 running"))
 
-    def test_files_output_and_the_event_stream(self):
+    def test_files_and_output(self):
         with TestClient(self.app) as c:
             run_id = self.run_once(c)
             base = f"/runs/{run_id}/items/SEC-1042"
@@ -275,18 +275,6 @@ class Runs(Site):
             for name in ("..%2f..%2fdb%2fagentflow.db", "%2e%2e/items/SEC-1042/fix.md", "nope.html"):
                 self.assertIn(c.get(f"/runs/{run_id}/output/{name}").status_code, (400, 404), name)
 
-            # the event stream replays from a sequence number
-            def events(query: str) -> list[dict]:
-                body = c.get(f"/api/events?run={run_id}&follow=false{query}").text
-                return [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
-            every = events("")
-            self.assertEqual([e["seq"] for e in every], sorted(e["seq"] for e in every))
-            self.assertEqual((every[0]["type"], every[-1]["type"]), ("run_started", "run_ended"))
-            self.assertEqual(events(f"&after={every[10]['seq']}")[0]["seq"], every[11]["seq"])
-            only = events("&item=SEC-1045")
-            self.assertEqual({e["item"] for e in only}, {"SEC-1045"})
-            self.assertIn("person_asked", [e["type"] for e in only])
-
     def test_a_cost_that_was_not_recorded_is_a_dash(self):
         with TestClient(self.app) as c:
             run_id = self.run_once(c)
@@ -300,9 +288,11 @@ class Runs(Site):
             self.assertEqual(run["cost"], {"text": "—", "tip": "cost was not recorded for this run"})
             self.assertIn('<span title="cost was not recorded for this run">—</span>', c.get("/").text)
 
-            # part of the cost known: at least that much
+            # part of the cost known: the sum of what was reported, as a plain number; the tooltip says what is missing
             self.store.db.execute("UPDATE attempts SET cost_usd = 0.0031 WHERE run_id = ? AND item_id = 'SEC-1042' AND stage = 'fix'", (run_id,))
-            self.assertEqual(c.get(f"/api/runs/{run_id}").json()["cost"]["text"], "≥ $0.0031")
+            cost = c.get(f"/api/runs/{run_id}").json()["cost"]
+            self.assertEqual(cost["text"], "$0.0031")
+            self.assertIn("cut short", cost["tip"])
 
 
 class Changes(Site):
@@ -519,7 +509,7 @@ class Design(Site):
             self.assertNotIn("<th>args</th>", page)
             self.assertIn(">MCP server<", c.get("/tools").text)
             flow = c.get("/api/flows/vuln-triage").json()  # a malformed block is a check error on the page, not a crash
-            self.assertTrue(any(e.startswith("limits: must be a mapping of at_once, cost_per_run_usd, ") for e in flow["errors"]), flow["errors"])
+            self.assertTrue(any(e.startswith("limits: must be a mapping of at_once, context_tokens, ") for e in flow["errors"]), flow["errors"])
 
     def test_the_settings_show_names_and_never_a_key(self):
         os.environ["OPENAI_API_KEY"] = "sk-not-for-any-page"
@@ -535,14 +525,14 @@ class Design(Site):
                                               {"name": "sonnet-cc", "default": False, "runs_on": "claude CLI", "provider": "", "model": "sonnet", "api": "", "reasoning": "",
                                                "key_env": "", "key_set": False}])           # and, with no key named, its own sign-in
             self.assertEqual(view["errors"], [])
-            numbers = {n["name"]: {r["k"]: (r["v"], r["mark"]) for r in n["rows"]} for n in view["numbers"]}  # every limit, and whether agentflow.yaml sets it
-            self.assertEqual(list(numbers), ["limits", "engine", "show"])
-            self.assertEqual((numbers["limits"]["script_seconds"], numbers["engine"]["stale_after_seconds"], numbers["show"]["rows"]),
-                             (("120", ""), ("60", "default"), ("50", "default")))
+            limits = {r["k"]: (r["v"], r["mark"]) for r in view["limits"]}  # the limits of a run, and whether agentflow.yaml sets each
+            self.assertEqual(list(limits), list(DEFAULTS["limits"]))
+            self.assertEqual(limits["script_seconds"], ("120", ""))
             page = c.get("/settings").text
-            for text in ("<code>OPENAI_API_KEY</code>", ">set<", "gpt-6-luna", ">default<", "cost_per_run_usd",
-                         "Engine timings", "heartbeat_seconds", "Shown on pages", "line_chars"):
+            for text in ("<code>OPENAI_API_KEY</code>", ">set<", "gpt-6-luna", ">default<", "cost_per_run_usd", "context_tokens"):
                 self.assertIn(text, page)
+            for text in ("heartbeat_seconds", "line_chars", "fact_chars"):  # the engine's own mechanics are not settings
+                self.assertNotIn(text, page)
             for url in ["/settings", "/sources/security-tickets", "/api/settings", "/api/plugins", "/flows/vuln-triage", "/api/sources/security-tickets"]:
                 self.assertNotIn("sk-not-for-any-page", c.get(url).text, url)
 

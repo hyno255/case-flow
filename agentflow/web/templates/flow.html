@@ -5,7 +5,7 @@
 {% block title %}{{ v.name }} · Flows · agentflow{% endblock %}
 {% block crumbs %}<a href="/flows">Flows</a>{% endblock %}
 {% block heading %}{{ v.name }} {{ ui.check(v.errors) }}{% endblock %}
-{% block live %}{% if v.tab == "runs" %} data-events="/api/events?after={{ v.seq }}"{% endif %}{% endblock %}
+{% block live %}{% if v.live %} data-refresh="{{ refresh }}"{% endif %}{% endblock %}
 {% block actions %}
 {% if v.can_run %}
 <button type="button" class="primary" data-post="/api/flows/{{ v.name }}/run" data-confirm="Run {{ v.name }} now?" title="fetch {{ v.source }} now and run this flow over every item it accepts">Run</button>

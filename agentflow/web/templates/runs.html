@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui %}
 {% block title %}Runs · agentflow{% endblock %}
-{% block live %} data-events="/api/events?after={{ v.seq }}"{% endblock %}
+{% block live %}{% if v.live %} data-refresh="{{ refresh }}"{% endif %}{% endblock %}
 {% block heading %}Runs{% endblock %}
 {% block main %}
 {% for f in v.failed %}<p class="alert bad"><a href="{{ f.href }}">{{ f.name }}</a> could not start a run: {{ f.error }}</p>{% endfor %}

@@ -228,17 +228,6 @@ class Registry:
                 errs.append(f"stage {sid}: the default agent does this stage, but {STAGES}/{sid}.md is missing or empty")
         for where, spec in self.flow_models(name):
             errs += self.settings.check_model(spec, where)
-        if not errs:  # the flow reads well: what a stage handed to a CLI cannot have
-            on_cli = self.settings.harness_of
-            if "model" in f and on_cli(f["model"]):
-                errs.append(f"model: the flow's model also runs its reviewers, which stay in the engine; name the {on_cli(f['model'])} model on a stage or an agent")
-            for sid, s in graph.stages.items():
-                if "review" in s and on_cli(self.agent(s["review"])[0].get("model", f.get("model"))):
-                    errs.append(f"stage {sid}: review {s['review']}: its model runs on a CLI; a reviewer runs in the engine")
-                harness = None if "run" in s else on_cli(self.model_for(name, s, s.get("agent")))
-                for t in (self.agent(s["agent"])[0].get("tools") or []) if harness and "agent" in s else []:
-                    if "mcp" in self.tool(t):
-                        errs.append(f"stage {sid}: its work goes to the {harness} CLI, which cannot use the tool {t}: it is an MCP server, not a command")
         return errs
 
     def check_all(self) -> list[tuple[str, str, list[str], str]]:
