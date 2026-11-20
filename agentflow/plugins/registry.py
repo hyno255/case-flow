@@ -28,7 +28,7 @@ from agentflow.settings import check_numbers
 SOURCE_KEYS = {"description", "run", "output", "fields"}
 TOOL_KEYS = {"description", "run", "args", "health", "mcp"}
 AGENT_KEYS = {"description", "tools", "model"}
-FLOW_KEYS = {"source", "where", "schedule", "stages", "finish", "stand_in", "model", "limits"}
+FLOW_KEYS = {"source", "where", "schedule", "stages", "finish", "stand_in", "instructions", "model", "limits"}
 OUTPUT_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.json")  # a source's output: one JSON file in the fetch's folder
 STAGE_KEYS = {"id", "run", "agent", "model", "check", "done_when", "review", "tries", "next", "on_fail"}
 STAGES = "stages"  # the folder of a flow that holds one file per stage
@@ -81,6 +81,11 @@ class Registry:
         """What the flow is for: FLOW.md, which every agent in the flow is told."""
         file = self.dir("flows", name) / "FLOW.md"
         return file.read_text().strip() if file.is_file() else ""
+
+    def flow_instructions(self, name: str) -> str | None:
+        """The flow's own base instructions for the agents that do its stages, when it names a file: they replace the engine's."""
+        file = self.flow(name).get("instructions")
+        return (self.dir("flows", name) / str(file)).read_text().strip() if file else None
 
     def stage_file(self, flow: str, stage: str) -> Path:
         return self.dir("flows", flow) / STAGES / f"{stage}.md"
@@ -203,9 +208,9 @@ class Registry:
             except ValueError as e:
                 errs.append(str(e))
         errs += check_numbers("limits", f.get("limits") or {})
-        for key in ("finish", "stand_in"):
+        for key, what in (("finish", "script"), ("stand_in", "script"), ("instructions", "file")):
             if key in f and not (d / str(f[key])).is_file():
-                errs.append(f"{key} script {f[key]} not found")
+                errs.append(f"{key} {what} {f[key]} not found")
         if not (d / "FLOW.md").is_file():
             errs.append("FLOW.md not found")
         graph, graph_errs = compile_flow(f, self.settings.limits_for(f))  # ids, next, on_fail, tries: the flow as a graph

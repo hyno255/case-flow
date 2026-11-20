@@ -7,12 +7,12 @@ import time
 
 # name: (label, pill on a page, bar in the trace)
 ENDINGS = {  # how an item can end
-    "done": ("done", "done", "ok"), "needs_person": ("needs a person", "hold", "hold"), "failed": ("failed", "bad", "bad"),
+    "done": ("done", "done", "ok"), "failed": ("failed", "bad", "bad"),
     "timed_out": ("timed out", "bad", "bad"), "over_budget": ("stopped at cost cap", "bad", "bad"),
     "cancelled": ("cancelled", "wait", "cut")}
 OUTCOMES = {  # how a try can end; "done" means the stage's work is done and its validation is not
-    "passed": ("passed", "done", "ok"), "rejected": ("not accepted", "hold", "fail"), "asked_for_person": ("asked for a person", "hold", "hold"),
-    "error": ("failed", "bad", "bad"), "interrupted": ("interrupted", "bad", "cut"), "timed_out": ("timed out", "bad", "cut"),
+    "passed": ("passed", "done", "ok"), "rejected": ("not accepted", "hold", "fail"), "failed": ("could not be done", "bad", "bad"),
+    "error": ("stopped", "bad", "bad"), "interrupted": ("interrupted", "bad", "cut"), "timed_out": ("timed out", "bad", "cut"),
     "cancelled": ("cancelled", "wait", "cut"), "done": ("validating", "run", "")}
 
 

@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from agentflow.records.layout import NEEDS_PERSON
 from agentflow.workers.procs import STOPPED, run_proc
 
 STAND_IN = str(Path(__file__).with_name("stand_in_cli.py"))
@@ -138,13 +137,11 @@ def cli_note(commands: list[tuple[str, str, str, list[str]]], servers: tuple = (
     if review:
         lines = ["## How you work here",
                  "You are in the item's work folder. Read the files in this folder and change nothing.",
-                 'Answer with one JSON object and nothing else: {"passed": true or false, "reason": "...", "needs_person": true or false}.']
+                 'Answer with one JSON object and nothing else: {"passed": true or false, "reason": "..."}.']
     else:
         lines = ["## How you work here",
                  "You are in the item's work folder. Read and write files in this folder only, and leave attempts/, verdicts/ and events.jsonl alone.",
-                 f"You have no tool named ask_for_person. Where the text above says to ask for a person, write {NEEDS_PERSON} "
-                 "with what you checked and what a person should look at, then stop.",
-                 "When the result is written, reply with one short line."]
+                 'End with one JSON object and nothing else: {"outcome": "done" or "failed", "reason": "..."}.']
     if servers:
         lines += ["", "## MCP servers you are given", "Their tools are yours to call: " + ", ".join(name for name, _, _ in servers) + "."]
     if commands:

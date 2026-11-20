@@ -150,7 +150,8 @@ def run_view(settings, store, run_id: str, tab: str = "items", span: str = "", e
     flow = flow_of(settings, store, run)
     v = run_row(settings, store, run)
     status = v["status"]
-    v.update({"tab": tab, "live": status in LIVE, "can_resume": status == "interrupted", "can_cancel": status in ("running", "interrupted"),
+    v.update({"tab": tab, "live": status in LIVE, "can_resume": status == "interrupted",
+              "can_retry": bool(run["ended"]) and any(i["ended_as"] != "done" for i in store.items(run_id)), "can_cancel": status in ("running", "interrupted"),
               "source": run["source"], "cap": f"${settings.limits_for(flow)['cost_per_run_usd']:.2f}",
               "snapshot": run["snapshot"], "folder": str(store.path(run)),
               "flow_exists": (settings.plugins / "flows" / run["flow"] / "flow.yaml").is_file(),

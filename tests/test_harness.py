@@ -44,7 +44,7 @@ class HandedOver(Home):
         items = self.items(run_id)
         # the items end as they do when the engine's own harness does the stage
         self.assertEqual({k: v["ended_as"] for k, v in items.items()},
-                         {"SEC-1042": "done", "SEC-1043": "done", "SEC-1044": "needs_person", "SEC-1045": "needs_person"})
+                         {"SEC-1042": "done", "SEC-1043": "done", "SEC-1044": "failed", "SEC-1045": "failed"})
         work = self.store.path(items["SEC-1042"])
 
         # the check script's reason reached the CLI's second try, and the commands the prompt named gave it its evidence
@@ -59,18 +59,18 @@ class HandedOver(Home):
         self.assertEqual(printed[-1]["type"], "turn.completed" if name == "codex" else "result")
         self.assertEqual((work / "attempts/analyse-1.codex.md").is_file(), name == "codex")  # Codex writes its last message to a file
 
-        # a CLI asks for a person with a file, which the engine reads and takes away
+        # a CLI ends a stage the way the engine's own runtime does: with its outcome, in the shape it was handed
         asked = self.store.path(items["SEC-1045"])
-        self.assertIn("neither", items["SEC-1045"]["reason"])
-        self.assertIn("neither", (asked / "attempts/analyse-1.needs-person.md").read_text())
-        self.assertFalse((asked / "needs-person.md").exists() or (asked / "origin.md").exists())
+        self.assertIn("analyse: origin-analyst could not do it: libexample-png is in neither", items["SEC-1045"]["reason"])
+        self.assertEqual(json.loads((asked / f"attempts/analyse-1.{name}.schema.json").read_text())["properties"]["outcome"], {"type": "string", "enum": ["done", "failed"]})
+        self.assertFalse((asked / "origin.md").exists())
 
         # one event per run of the CLI, and no tool call of the analyst's: the engine does not follow what a CLI does
         events = [json.loads(l) for l in (work / "events.jsonl").read_text().splitlines()]
         runs = [e for e in events if e["type"] == "cli_run"]
         self.assertEqual([(e["harness"], e["n"], e["output"], e["cost_usd"]) for e in runs],
                          [(name, n, f"attempts/analyse-{n}.{name}.jsonl", 0) for n in (1, 2)])
-        self.assertTrue(all(e["tokens_in"] > 0 and e["said"] == "Done." for e in runs))
+        self.assertTrue(all(e["tokens_in"] > 0 and json.loads(e["said"]) == {"outcome": "done", "reason": "Done."} for e in runs))
         self.assertEqual([e for e in events if e["type"] == "tool_call" and e["stage"] == "analyse" and not e.get("role")], [])
         self.assertEqual([e["model"] for e in events if e["type"] == "attempt_started" and e["stage"] == "analyse"], [f"{name} CLI · scripted stand-in"] * 2)
 
@@ -172,7 +172,7 @@ class HandedOver(Home):
         run_id = asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))
         items = self.items(run_id)
         self.assertEqual({k: v["ended_as"] for k, v in items.items()},
-                         {"SEC-1042": "done", "SEC-1043": "done", "SEC-1044": "needs_person", "SEC-1045": "needs_person"})
+                         {"SEC-1042": "done", "SEC-1043": "done", "SEC-1044": "failed", "SEC-1045": "failed"})
         work = self.store.path(items["SEC-1042"])
         for file in ("attempts/analyse-review-2.codex.jsonl", "attempts/analyse-review-2.codex.schema.json", "attempts/report-1.codex.jsonl", "attempts/report-review-1.codex.md"):
             self.assertTrue((work / file).is_file(), file)

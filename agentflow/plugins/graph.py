@@ -71,7 +71,7 @@ class Graph:
             return self.after(stage)
         if last["outcome"] == "rejected" and rejected < self.tries(stage):
             return self.after(stage, "fail")
-        return stage  # cut short, failed, asked for a person, or out of tries: this stage again
+        return stage  # cut short, failed, or out of tries: this stage again
 
 
 def compile_flow(flow: dict, limits: dict) -> tuple[Graph, list[str]]:

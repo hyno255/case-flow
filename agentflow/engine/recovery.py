@@ -1,5 +1,5 @@
 """What happens to a run after it started: the watchdog records that its process is gone, and a person can
-resume it or cancel it. Both stay inside that run: no run reads or continues another run's work.
+resume it, cancel it, or have the items that did not end as done retried. All stay inside that run: no run reads or continues another run's work.
 
 Nothing here resumes or cleans up by itself. The watchdog only records; a person (or a command) decides.
 """
@@ -51,6 +51,37 @@ async def resume_run(settings, store, run_id: str, *, claimed: bool = False, sta
     flow's graph where its latest try left it, in its own folder, with the reasons from any earlier rejected tries."""
     if not claimed:
         claim_resume(store, run_id, settings.internal["stale_after_seconds"] if stale_after is None else stale_after)
+    return await _go_on(settings, store, run_id, "run_resumed")
+
+
+def claim_retry(store, run_id: str, item_id: str | None = None) -> list[str]:
+    """Open a finished run again for its items that did not end as done (or the one named). Returns their ids.
+    Raises ValueError when the run has not finished or has no such item. One conditional update decides it."""
+    if not store.need_run(run_id)["ended"]:
+        raise ValueError(f"run {run_id} has not finished; resume or cancel it first")
+    ids = [i["item_id"] for i in store.items(run_id) if i["ended_as"] != "done" and item_id in (None, i["item_id"])]
+    if not ids:
+        raise ValueError(f"item {item_id} of run {run_id} ended as done or is not in it" if item_id else f"every item of run {run_id} ended as done")
+    won = store.db.execute("UPDATE runs SET ended = NULL, beat = ?, interrupted_at = NULL, cancel_requested = 0 WHERE id = ? AND ended IS NOT NULL",
+                           (time.time(), run_id)).rowcount
+    if not won:
+        raise ValueError(f"run {run_id} is already being retried")
+    for i in ids:
+        store.db.execute("UPDATE items SET ended_at = NULL, ended_as = NULL, reason = NULL, claimed_at = NULL WHERE run_id = ? AND item_id = ?", (run_id, i))
+        store.emit(run_id, i, None, "item_retried")  # tries from before this do not count against a stage's ceiling
+    return ids
+
+
+async def retry_run(settings, store, run_id: str, item_id: str | None = None, *, claimed: bool = False) -> str:
+    """Work the items of a finished run that did not end as done once more. Each goes on at the stage where it stopped,
+    in its own folder, and is told why its earlier tries did not get through. Items that ended as done are left alone."""
+    if not claimed:
+        claim_retry(store, run_id, item_id)
+    return await _go_on(settings, store, run_id, "run_retried")
+
+
+async def _go_on(settings, store, run_id: str, event: str) -> str:
+    """Put every open item of a run back on the flow's graph where its latest try left it, and work them."""
     run = store.run(run_id)
     snap = run_plugins(settings, store, run)
     for spec in snap.models_used(run["flow"]):
@@ -61,7 +92,7 @@ async def resume_run(settings, store, run_id: str, *, claimed: bool = False, sta
         start = graph.position(*store.last_try(run_id, it["item_id"]))
         todo.append((json.loads(it["payload"]), store.path(it), start if start != graph.start else None))
     store.db.execute("UPDATE items SET claimed_at = NULL WHERE run_id = ? AND ended_at IS NULL", (run_id,))
-    store.emit(run_id, None, None, "run_resumed", items=[t[0]["id"] for t in todo])
+    store.emit(run_id, None, None, event, items=[t[0]["id"] for t in todo])
     return await execute(settings, store, run_id, todo)
 
 

@@ -39,8 +39,8 @@ class Pure(unittest.TestCase):
     def test_decide(self):
         ok, bad = {"passed": True}, {"passed": False}
         for args, want in [((3, 1, [ok, ok]), "pass"), ((3, 1, []), "pass"), ((3, 1, [bad]), "again"), ((3, 2, [ok, bad]), "again"),
-                           ((3, 3, [bad]), "person"), ((2, 2, [ok, bad]), "person"),
-                           ((3, 1, [{"passed": False, "needs_person": True}]), "person"), ((3, 1, [{"passed": False, "error": True}]), "person")]:
+                           ((3, 3, [bad]), "failed"), ((2, 2, [ok, bad]), "failed"),
+                           ((3, 1, [{"passed": False, "error": True}]), "failed")]:
             self.assertEqual(decide(*args), want, args)
 
     def test_confined(self):
@@ -137,7 +137,7 @@ class EndToEnd(Home):
         run_id = asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))  # a person starts a flow; its source is fetched for it
         items = self.items(run_id)
         self.assertEqual({k: v["ended_as"] for k, v in items.items()},
-                         {"SEC-1042": "done", "SEC-1043": "done", "SEC-1044": "needs_person", "SEC-1045": "needs_person"})
+                         {"SEC-1042": "done", "SEC-1043": "done", "SEC-1044": "failed", "SEC-1045": "failed"})
         work = self.store.path(items["SEC-1042"])
 
         # the feedback loop: analyse failed its check once, the reason reached the second try, and both rounds are kept
@@ -149,8 +149,11 @@ class EndToEnd(Home):
         self.assertIn("4.3.1", (work / "fix.md").read_text())
         self.assertIn("3.12-slim-20261110", (self.store.path(items["SEC-1043"]) / "fix.md").read_text())
 
-        # who asked for a person, and at which stage
-        self.assertIn("neither", items["SEC-1045"]["reason"])
+        # an agent that cannot do its stage says so itself, and the item ends there: no more tries are spent on it
+        self.assertIn("analyse: origin-analyst could not do it: libexample-png is in neither", items["SEC-1045"]["reason"])
+        self.assertEqual([a["outcome"] for a in self.store.q("SELECT outcome FROM attempts WHERE run_id = ? AND item_id = 'SEC-1045' AND stage = 'analyse'", run_id)], ["failed"])
+        # work that was not accepted goes back into the conversation the agent already has: it is told only why
+        self.assertTrue((work / "attempts/analyse-2.prompt.md").read_text().startswith("Stage 'analyse' for item SEC-1042: your work was not accepted.\n- attempt 1, check scripts/chain-cites-files.py:"))
         self.assertFalse((self.store.path(items["SEC-1045"]) / "origin.md").exists())
         self.assertIn("no release or tag", items["SEC-1044"]["reason"])
 
@@ -169,7 +172,7 @@ class EndToEnd(Home):
         run = self.store.one("SELECT * FROM runs WHERE id = ?", run_id)
         out = self.store.path(run) / "output"
         self.assertEqual(sorted(p.name for p in out.iterdir()), ["SEC-1042.html", "SEC-1043.html", "SEC-1044.html", "SEC-1045.html", "index.html", "run.log"])
-        self.assertIn("4 tickets: 2 triaged, 2 needs a person", (out / "index.html").read_text())
+        self.assertIn("4 tickets: 2 triaged, 2 failed", (out / "index.html").read_text())
         self.assertIn("Raise acme-http", (out / "SEC-1042.html").read_text())
         ended = [e for e in self.store.events(run_id) if e["item"] is None]
         self.assertEqual([e["type"] for e in ended], ["run_started", "finish_ended", "run_ended"])
@@ -189,11 +192,11 @@ class EndToEnd(Home):
         self.assertEqual({k: v["ended_as"] for k, v in again.items()}, {k: v["ended_as"] for k, v in items.items()})
         self.assertEqual(self.store.one("SELECT COUNT(*) n FROM attempts WHERE run_id = ? AND item_id = 'SEC-1042' AND stage = 'analyse'", second)["n"], 2)
         self.assertNotEqual(self.store.path(again["SEC-1042"]), work)
-        self.assertIn("2 triaged, 2 needs a person", (self.store.path(self.store.one("SELECT folder FROM runs WHERE id = ?", second)) / "output/index.html").read_text())
+        self.assertIn("2 triaged, 2 failed", (self.store.path(self.store.one("SELECT folder FROM runs WHERE id = ?", second)) / "output/index.html").read_text())
 
         # the engine does not look back, but a flow can: `agentflow history` is what its scripts call, and the asking run is left out
         rows = earlier(self.store, "vuln-triage", "SEC-1044", self.settings.internal["rows"], not_run=second)
-        self.assertEqual([(r["run"], r["ended_as"], r["trial"]) for r in rows], [(run_id, "needs_person", False)])
+        self.assertEqual([(r["run"], r["ended_as"], r["trial"]) for r in rows], [(run_id, "failed", False)])
         self.assertIn("no release or tag", rows[0]["reason"])
         self.assertEqual((rows[0]["folder"], rows[0]["output"]), (str(self.store.path(items["SEC-1044"]).resolve()), str(out.resolve())))
         self.assertIn("origin.md", rows[0]["files"])
@@ -272,14 +275,14 @@ class EndToEnd(Home):
         flow_dir = self.settings.plugins / "flows/vuln-triage"
         flow = flow_dir / "flow.yaml"
         # the platform's limit on model calls: an agent that needs a second call is stopped. That is a try that was not
-        # accepted, so the next try is told why; out of tries, the item is set aside for a person, with what the tries used
+        # accepted, so the next try is told why; at the ceiling of tries the item fails, with what the tries used
         self.settings.limits["model_calls"] = 1
         run_id = asyncio.run(try_flow(self.settings, self.store, "vuln-triage", "SEC-1042"))
         item = self.items(run_id)["SEC-1042"]
-        self.assertEqual(item["ended_as"], "needs_person")
-        self.assertIn("analyse: not accepted after 2 of 2 tries. Last reason from engine: the try stopped without an answer: the run used all of its 1 model requests", item["reason"])
+        self.assertEqual(item["ended_as"], "failed")
+        self.assertIn("analyse: not accepted after 5 of 5 tries. Last reason from engine: the try stopped without an answer: the run used all of its 1 model requests", item["reason"])
         tries = self.store.q("SELECT n, outcome, model_calls, cost_usd FROM attempts WHERE run_id = ? AND stage = 'analyse' ORDER BY n", run_id)
-        self.assertEqual([(t["n"], t["outcome"], t["model_calls"], t["cost_usd"]) for t in tries], [(1, "rejected", 1, 0), (2, "rejected", 1, 0)])
+        self.assertEqual([(t["n"], t["outcome"], t["model_calls"], t["cost_usd"]) for t in tries], [(n, "rejected", 1, 0) for n in range(1, 6)])
         self.assertIn("- attempt 1, engine: the try stopped without an answer", (self.store.path(item) / "attempts/analyse-2.prompt.md").read_text())
         self.assertTrue(self.store.usage(run_id)["cost_known"])
         self.settings.limits["model_calls"] = DEFAULTS["limits"]["model_calls"]
@@ -307,10 +310,40 @@ class EndToEnd(Home):
         errs = installed(self.settings).check_flow("vuln-triage")
         self.assertTrue({"limits: unknown key 'surprise'", "limits: model_calls must be a number above 0"} <= set(errs), errs)
         yaml = self.home / "agentflow.yaml"
-        yaml.write_text(yaml.read_text().replace("  tries: 2 ", "  tries: many\n  heartbeat_seconds: 90\n  model_calls: 7 "))
+        yaml.write_text(yaml.read_text().replace("  tries: 5 ", "  tries: many\n  heartbeat_seconds: 90\n  model_calls: 7 "))
         changed = Settings(self.home)
         self.assertEqual(changed.check(), ["limits: unknown key 'heartbeat_seconds'", "limits: tries must be a number above 0"])  # the engine's mechanics are not settings
         self.assertEqual((changed.limits["model_calls"], changed.internal["heartbeat_seconds"]), (7, DEFAULTS["internal"]["heartbeat_seconds"]))
+
+    def test_the_instructions_come_in_layers_and_a_flow_can_replace_the_base(self):
+        from agentflow.engine.stages import instructions_for
+        from agentflow.workers.agents import base_prompt
+
+        def told(stage_id):
+            reg = installed(self.settings)
+            graph = reg.graph("vuln-triage")
+            ctx = Ctx(self.settings, self.store, reg, "vuln-triage", "r", {"id": "SEC-1"}, self.home / "w", False, self.settings.limits, graph, self.home / "o")
+            return instructions_for(ctx, graph.stages[stage_id])
+
+        # the general first: the engine's base, the agent's method, what the flow is for, the stage
+        text, tools = told("analyse")
+        self.assertTrue(text.startswith(base_prompt("agent")))
+        marks = [text.index(m) for m in ("## How you finish", "## Your method", "## The flow you are part of")]
+        self.assertEqual(marks, sorted(marks))
+        self.assertIn("sbom-query", tools)
+        self.assertIn("## This stage: fix", told("fix")[0])
+        self.assertNotIn("ask_for_person", text + told("fix")[0])  # there is no tool for giving up: the agent ends with its outcome
+
+        # a flow's own file takes the place of the engine's base, for the agents that do its stages
+        flow = self.home / "plugins/flows/vuln-triage"
+        (flow / "flow.yaml").write_text((flow / "flow.yaml").read_text() + "instructions: BASE.md\n")
+        self.assertIn("instructions file BASE.md not found", installed(self.settings).check_flow("vuln-triage"))
+        (flow / "BASE.md").write_text("You work for the security team. End with done or failed.")
+        self.assertEqual(installed(self.settings).check_flow("vuln-triage"), [])
+        text, _ = told("analyse")
+        self.assertTrue(text.startswith("You work for the security team."))
+        self.assertNotIn("## How you finish", text)
+        self.assertIn("## Your method", text)
 
     def test_reviewer_agent_and_early_end(self):
         flow_dir = self.settings.plugins / "flows/vuln-triage"

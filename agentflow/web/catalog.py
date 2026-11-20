@@ -18,7 +18,7 @@ from . import draw, show, views
 KINDS = ("flows", "agents", "tools", "sources")
 TABS = {"flows": ("design", "files", "runs"), "agents": ("config", "method", "files"), "tools": ("config", "files"), "sources": ("config", "fetches", "files")}
 MAIN = {"flows": "flow.yaml", "agents": "AGENT.md", "tools": "tool.yaml", "sources": "source.yaml"}  # the file a Files tab opens with
-BUILT_IN = ("list_files", "read_file", "write_file", "ask_for_person")  # handed to every agent by the engine; a reviewer gets no write_file
+BUILT_IN = ("list_files", "read_file", "write_file")  # handed to every agent by the engine; a reviewer gets no write_file
 
 
 def _safe(check, name: str) -> list[str]:

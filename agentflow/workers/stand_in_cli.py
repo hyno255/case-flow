@@ -3,8 +3,8 @@
 With --stand-in the engine starts this in place of the CLI:
 `stand_in_cli.py <codex|claude> <file for the last message> <the flow's stand-in script> <work|review>`, in the item's work folder,
 with the instructions and the prompt on stdin. It knows no flow. It asks the flow's stand-in script what the model would
-do next (see `ask`), does it the way a CLI would (reads and writes files, runs the commands the instructions name,
-writes needs-person.md), and prints what the CLI it stands in for would print.
+do next (see `ask`), does it the way a CLI would (reads and writes files, runs the commands the instructions name),
+and prints what the CLI it stands in for would print.
 
 Run as a file with the standard library only. The stand-in for the model (stand_in.py) asks the same script the same way, with `question` and `answer`.
 """
@@ -23,7 +23,8 @@ def stage_of(told: str) -> str:
 
 def question(prompt: str, review: bool, results: list[dict]) -> str:
     """What the flow's stand-in script is asked, on its stdin: the stage, whether a reviewer asks, the prompt, and the
-    tool results so far. It prints {"calls": [{"tool", "args"}]}, {"text": ...} or, for a reviewer, {"verdict": {...}}."""
+    tool results so far. It prints {"calls": [{"tool", "args"}]}, then {"text": ...} when the stage is done or {"failed": ...}
+    when it cannot be done; a reviewer prints {"verdict": {...}}."""
     return json.dumps({"stage": stage_of(prompt), "review": review, "prompt": prompt, "results": results})
 
 
@@ -31,6 +32,11 @@ def answer(code: int, out: str, err: str) -> dict:
     if code:
         raise RuntimeError(f"the flow's stand-in script failed: {err.strip()}")
     return json.loads(out)
+
+
+def outcome(said: dict) -> dict:
+    """The outcome the one who does a stage ends with, from the script's {"text"} or {"failed"}."""
+    return {"outcome": "failed", "reason": said["failed"]} if "failed" in said else {"outcome": "done", "reason": said["text"]}
 
 
 def ask(script: str, prompt: str, review: bool, results: list[dict]) -> dict:
@@ -44,16 +50,16 @@ def main() -> None:
     results, wrote = [], 0
     while True:
         next_ = ask(script, told, review, results)
-        if "text" in next_ or "verdict" in next_:  # a reviewer's answer is its verdict, as JSON
-            said = next_["text"] if "text" in next_ else json.dumps(next_["verdict"])
+        if "calls" not in next_:  # the answer, as JSON: a reviewer's verdict, or the outcome
+            said = json.dumps(next_.get("verdict") or outcome(next_))
             break
         for c in next_["calls"]:
             tool, args = c["tool"], c["args"]
             if tool == "read_file":
                 content = Path(args["path"]).read_text()
-            elif tool in ("write_file", "ask_for_person"):
-                path, content = (args["path"], args["content"]) if tool == "write_file" else ("needs-person.md", args["reason"])
-                Path(path).write_text(content)
+            elif tool == "write_file":
+                content = args["content"]
+                Path(args["path"]).write_text(content)
                 wrote += len(content)
             else:  # a tool plugin, as the command the instructions name for it; its arguments in the order written
                 content = subprocess.run([commands[tool], *map(str, args.values())], capture_output=True, text=True, check=True).stdout

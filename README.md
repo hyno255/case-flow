@@ -33,7 +33,7 @@ docker compose run --rm agentflow run vuln-triage --stand-in
 | `try <flow> [--item ID]` | one item as a trial; the flow's scripts are told it is one |
 | `schedule [on\|off <flow>]` | shows the flows' schedules, or switches one |
 | `show [run] [item]` | recent runs, or what one run or item did and cost |
-| `resume <run>`, `cancel <run>` | what can be done with a run afterwards |
+| `resume <run>`, `cancel <run>`, `retry <run> [--item ID]` | what can be done with a run afterwards |
 | `history [flow] [--item ID]` | for a flow's own scripts: how items ended in earlier runs and where their files are, as JSON |
 | `serve` | the web UI, the API, the schedules and the health checks |
 
@@ -198,26 +198,60 @@ models:
 - The agent's tools reach the CLI in the CLI's own way. A script tool is named to it as a command. A tool that is an MCP server
   is registered with it for that run: `--mcp-config` for Claude Code, `-c mcp_servers.<name>…` for Codex. The MCP servers the
   CLI has from its own configuration stay, so both kinds work side by side.
-- To set an item aside for a person, the CLI writes `needs-person.md`.
+- The CLI ends with the same outcome as the engine's own runtime, `done` or `failed` with a reason, in its structured output.
 - The item's `minutes_per_item` is the CLI's time limit, and cancelling the run stops it.
 - `--stand-in` starts a stand-in CLI in its place, which does what the flow's `stand_in` script says: no sign-in, no cost.
 
 `agentflow check` says whether each CLI a model entry names is installed. The image has Codex and Claude Code at fixed versions
 (see the `Dockerfile`).
 
-## When a try goes wrong
+## How an agent ends a stage, and who decides on another try
 
-A try that goes wrong is not the end of the item. The agent, or the next try, is told what happened and acts on it:
+An agent has no tool for giving up and nobody to ask. It ends every stage with one outcome and a reason:
+
+```json
+{"outcome": "done", "reason": "origin.md written: app dependency, three links"}
+{"outcome": "failed", "reason": "libexample-png is in neither dependency-tree.json nor image-sbom.json. Check whether the scanner flagged the right service."}
+```
+
+- `done`: the check script and the reviewer judge the work.
+- `failed`: the item ends as failed with that reason. No further try is spent on it.
+
+An item ends as done or as failed; there is no third ending.
+
+Whether work is done again is the agent's decision, not the engine's:
 
 | What happened | What the engine does |
 |---|---|
 | A tool fails or runs out of time | The error is the tool's answer. The agent reads it and goes another way, in the same try. |
 | The model cannot be reached | The model client tries the request again by itself. If that does not help, the try stops. |
-| The answer is cut off at the output limit, the run is out of `model_calls`, a CLI exits with an error | The try stops. |
-| A try stopped | It counts as a rejected try. The next try gets the reason as feedback, the same way as a reviewer's. |
-| The stage is out of `tries` | The item is set aside for a person, with the last reason. |
+| A check or a reviewer does not accept the work | The reason goes back into the conversation the agent already has. It fixes the work and ends with `done`, or ends with `failed`. |
+| A try stopped: the answer cut off, out of `model_calls`, a CLI error | A fresh try is told why, and decides the same way. |
+| The stage reached `tries` | The item ends as failed. `tries` is only a ceiling, like a limit on turns. |
 
-A stage script that fails still fails the item: a script has nobody to tell.
+A stage script that fails still fails the item: a script has nobody to tell. An agent on Codex or Claude Code gets a
+fresh run with the reasons instead of the same conversation.
+
+### After an item failed
+
+```bash
+agentflow retry <run>
+```
+
+This works the items of a finished run that did not end as done once more; `--item ID` names one, and the run's page has
+the same as a button. Each item goes on at the stage where it stopped, in its own folder, and is told what its earlier
+tries said. Its count of tries starts again. Items that ended as done are left alone, and the flow's `finish` script runs again.
+
+### What an agent is told
+
+In this order, the general first:
+
+1. The base instructions: how to work, what to do when something goes wrong, how to finish. The engine's are in
+   `agentflow/workers/prompts/agent.md`. A flow replaces them with its own file: `instructions: BASE.md` in `flow.yaml`.
+2. The agent's method, from its `AGENT.md`.
+3. What the flow is for, from `FLOW.md`.
+4. What the stage does, from `stages/<id>.md`.
+5. The task: the item, the files in its folder, what the stage is accepted on, and the reasons of earlier tries.
 
 An agent's context is kept in bounds: once a request reads more than `context_tokens`, the answers of its older tool calls
 are cleared (the calls stay, so it can ask again). Codex and Claude Code compact their own context.
@@ -238,7 +272,7 @@ limits:                  # a flow.yaml may set its own `limits` with the same ke
   script_seconds: 120    # one script or one tool call
   model_calls: 20        # model requests in one agent run
   context_tokens: 100000 # past this, an agent's older tool results are cleared
-  tries: 2               # a stage that names no `tries`
+  tries: 5               # the most tries of one stage; the agent doing it may end it earlier
 ```
 
 The Settings page lists these seven with a mark on those left at their default. `check` reports an unknown key or a value

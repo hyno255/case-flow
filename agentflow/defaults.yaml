@@ -8,7 +8,7 @@ limits:
   script_seconds: 120         # one script or one tool call
   model_calls: 20             # model requests in one agent run
   context_tokens: 100000      # when a request reads more than this, the agent's older tool results are cleared
-  tries: 2                    # tries of a stage that names no `tries`
+  tries: 5                    # the most tries of one stage; the agent doing it may end it earlier
 
 # The engine's own mechanics. These are not settings: agentflow.yaml cannot change them and no page lists them.
 # They are here so that the code holds no number.

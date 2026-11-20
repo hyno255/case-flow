@@ -30,8 +30,10 @@ def line(event: dict, chars: int) -> str | None:
         return f"{who}   the try stopped: {event['error'][:chars]}"
     elif t == "verdict":
         return f"{who}   {event['by']}: {'pass' if event['passed'] else 'FAIL'}  {event['reason'][:chars]}"
-    elif t == "person_asked":
-        return f"{who}   asked for a person: {event['reason'][:chars]}"
+    elif t == "agent_failed":
+        return f"{who}   {event['by']} could not do it: {event['reason'][:chars]}"
+    elif t == "item_retried":
+        return f"{event.get('item') or '':<9} retried"
     elif t == "attempt_cancelled":
         return f"{who} try {event['n']} was cancelled: {event['script']} was stopped"
     elif t == "attempt_interrupted":
@@ -40,6 +42,8 @@ def line(event: dict, chars: int) -> str | None:
         return f"run       finish script {event['script']} " + ("ended" if event["exit_code"] == 0 else f"FAILED with exit code {event['exit_code']}: {event['output'][-chars:]}")
     elif t == "run_interrupted":
         return f"run       interrupted: {event['reason']}"
+    elif t == "run_retried":
+        return f"run       retried: {', '.join(event['items'])}"
     elif t == "run_resumed":
         return f"run       resumed for {', '.join(event['items']) or 'no items'}"
     elif t == "item_started" and event.get("from_stage"):

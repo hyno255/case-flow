@@ -8,6 +8,7 @@
 {% block heading %}{{ v.id }} {{ ui.pill(v.status, v.pill) }}{% if v.trial %} {{ ui.pill("trial", "wait", "one item, to try the flow") }}{% endif %}{% endblock %}
 {% block actions %}
 {% if v.can_resume %}<button type="button" class="primary" data-post="/api/runs/{{ v.id }}/resume" data-confirm="Resume {{ v.id }}?">Resume</button>{% endif %}
+{% if v.can_retry %}<button type="button" class="primary" data-post="/api/runs/{{ v.id }}/retry" data-confirm="Work the items of {{ v.id }} that did not end as done once more?" title="Each goes on at the stage where it stopped, told why it did not get through">Retry failed</button>{% endif %}
 {% if v.can_cancel %}<button type="button" data-post="/api/runs/{{ v.id }}/cancel" data-confirm="Cancel {{ v.id }}?">Cancel</button>{% endif %}
 {% endblock %}
 {% block head %}

@@ -8,11 +8,12 @@
     agentflow show                               recent runs
     agentflow show <run> [item] [--follow]       what a run or one item did and cost; --follow prints its events until it ends
     agentflow resume <run>                       continue a run whose process stopped; finished stages are kept
+    agentflow retry <run> [--item ID]            work the items that did not end as done once more, from where each stopped
     agentflow cancel <run>                       stop a run: running scripts now, agents after their try
     agentflow history [flow] [--item ID]         for a flow's own scripts: how items ended in earlier runs and where their files are, as JSON
     agentflow history --run RUN --item ID --file PATH    one file of an item's work folder in an earlier run
 
-try, run, resume and serve take --stand-in: the scripted model, which needs no key and costs nothing.
+try, run, resume, retry and serve take --stand-in: the scripted model, which needs no key and costs nothing.
 """
 import argparse
 import asyncio
@@ -140,6 +141,11 @@ def cmd_run(a, settings, store) -> int:
     return print_run(settings, store, asyncio.run(start_flow(settings, store, a.flow)))
 
 
+def cmd_retry(a, settings, store) -> int:
+    from agentflow.engine.recovery import retry_run
+    return print_run(settings, store, asyncio.run(retry_run(settings, store, a.run, a.item)))
+
+
 def cmd_resume(a, settings, store) -> int:
     from agentflow.engine.recovery import resume_run
     print(f"resuming {a.run} · finished stages are kept{STAND_IN if settings.stand_in else ''}\n")
@@ -214,6 +220,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--item")
     command("run", cmd_run, model=True).add_argument("flow")
     command("resume", cmd_resume, model=True).add_argument("run")
+    retry = command("retry", cmd_retry, model=True)
+    retry.add_argument("run")
+    retry.add_argument("--item")
     command("cancel", cmd_cancel).add_argument("run")
     p = command("schedule", cmd_schedule)
     p.add_argument("switch", nargs="?", choices=["on", "off"])

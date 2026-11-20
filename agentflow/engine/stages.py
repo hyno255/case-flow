@@ -1,9 +1,9 @@
 """One item on the flow's graph: do a stage, validate it, and follow the edge its outcome picks.
 
-Per try: do -> check script -> reviewer -> decide. The first fail ends the try. An accepted stage follows its
-pass edge. A rejected stage follows its fail edge, to itself or to an earlier stage, which runs again with the
-reason; the item then works its way forward again. Out of tries, a validator that errors, or a request for a
-person all set the item aside. Nothing passes by default.
+Per try: do -> check script -> reviewer -> decide. The one who does a stage ends with its own outcome: done or failed.
+Done work is validated, and the first fail ends the try. Work that was not accepted goes back to the one who did it,
+in the same conversation, and it decides: fix it, or say that it has failed. An accepted stage follows its pass edge.
+The engine only keeps a ceiling on the rounds (`tries`). Nothing passes by default.
 """
 import asyncio
 import json
@@ -11,10 +11,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from agentflow.workers.agents import CHECKER, DEFAULT_AGENT, Verdict, file_tools, person_tool, run_agent, plugin_tool
+from agentflow.workers.agents import AgentStopped, Outcome, Verdict, base_prompt, file_tools, run_agent, plugin_tool
 from agentflow.plugins.graph import END, Graph, stage_by
 from agentflow.workers.harness import CliStopped, Job, cli_note, run_cli, tool_commands, tool_servers
-from agentflow.records.layout import ATTEMPTS, NEEDS_PERSON, VERDICTS, asked_file, cli_file, prompt_file, verdict_file, visible_files
+from agentflow.records.layout import ATTEMPTS, VERDICTS, cli_file, prompt_file, verdict_file, visible_files
 from agentflow.workers.procs import DONE_EARLY, STOPPED, run_proc
 
 
@@ -79,6 +79,10 @@ class Ctx:
     def emit(self, stage: str | None, type_: str, **data) -> None:
         self.store.emit(self.run_id, self.item_id, stage, type_, folder=self.work, **data)
 
+    def retried(self) -> float:
+        """When a person last had this item retried, or 0. Tries from before that do not count against a stage's ceiling."""
+        return self.store.one("SELECT COALESCE(MAX(ts), 0) t FROM events WHERE run_id = ? AND item_id = ? AND type = 'item_retried'", self.run_id, self.item_id)["t"]
+
     def tries_of(self, stage: str) -> list:
         return self.store.q("SELECT n, outcome, started FROM attempts WHERE run_id = ? AND item_id = ? AND stage = ? ORDER BY n", self.run_id, self.item_id, stage)
 
@@ -90,7 +94,7 @@ class Ctx:
         senders, seen, out = self.graph.senders(stage), set(), []
         for v in self.store.q("""SELECT v.stage, v.n, v.by, v.reason, a.started FROM verdicts v
                                  JOIN attempts a ON a.run_id = v.run_id AND a.item_id = v.item_id AND a.stage = v.stage AND a.n = v.n
-                                 WHERE v.run_id = ? AND v.item_id = ? AND v.passed = 0 AND a.outcome = 'rejected' ORDER BY v.id""", self.run_id, self.item_id):
+                                 WHERE v.run_id = ? AND v.item_id = ? AND v.passed = 0 AND a.outcome IN ('rejected', 'failed') ORDER BY v.id""", self.run_id, self.item_id):
             if (v["stage"], v["n"]) in seen:
                 continue  # the first failing verdict of a try is its reason
             seen.add((v["stage"], v["n"]))
@@ -102,12 +106,12 @@ class Ctx:
 
 
 def decide(tries: int, attempt: int, verdicts: list[dict]) -> str:
-    """Pure: what happens after one round. Returns 'pass', 'again' or 'person'."""
-    if any(v.get("needs_person") or v.get("error") for v in verdicts):
-        return "person"
+    """Pure: what happens after one round. Returns 'pass', 'again' or 'failed'."""
+    if any(v.get("error") for v in verdicts):
+        return "failed"
     if all(v["passed"] for v in verdicts):
         return "pass"
-    return "again" if attempt < tries else "person"
+    return "again" if attempt < tries else "failed"
 
 
 End = tuple[str, str] | None  # (outcome, reason) when the stage ends here; None when the round goes on
@@ -130,72 +134,70 @@ async def _by_script(ctx: Ctx, stage: dict, n: int, attempt: int) -> End:
     return None
 
 
-VERDICT_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["passed", "reason", "needs_person"],
-                  "properties": {"passed": {"type": "boolean"}, "reason": {"type": "string"}, "needs_person": {"type": "boolean"}}}
+def _schema(shape) -> dict:
+    """The JSON schema a CLI is handed for its answer: every field required, nothing else allowed."""
+    schema = shape.model_json_schema()
+    return {"type": "object", "additionalProperties": False, "required": list(schema["properties"]),
+            "properties": {k: {f: v[f] for f in ("type", "enum") if f in v} for k, v in schema["properties"].items()}}
 
 
-def _verdict(text: str) -> Verdict:
-    """A reviewer's answer from a CLI: the JSON object in what it said."""
-    return Verdict.model_validate_json(text[text.index("{"):text.rindex("}") + 1])
-
-
-async def _agent_run(ctx: Ctx, sid: str, n: int, instructions: str, prompt: str, tools: list[str], model, report, asked: list | None = None):
+async def _agent_run(ctx: Ctx, sid: str, n: int, instructions: str, prompt: str, tools: list[str], model, report, review: bool, talk: list | None = None):
     """One agent run of a stage, on the runtime its model names: the engine's own, or a coding CLI. The same for the
-    one who does the stage and the one who reviews it. `asked` is given to the one who does the stage, and gets what
-    it asked a person. A reviewer has none: it reads only, and what comes back is its Verdict. Returns (answer, what it used)."""
-    review = asked is None
+    one who does the stage and the one who reviews it. The first answers with an Outcome and may write; a reviewer reads
+    only and answers with a Verdict. `talk` is the conversation of the one who does the stage, which goes on from try
+    to try on the engine's own runtime. Returns (answer, what it used)."""
+    shape = Verdict if review else Outcome
     harness = ctx.settings.harness_of(model)
     if not harness:
-        given = file_tools(ctx.work, not review, ctx.settings) + [ctx.tool(t) for t in tools] + ([] if review else [person_tool(asked)])
-        return await run_agent(ctx.settings, instructions, prompt, given, output_type=Verdict if review else str, model=model, limits=ctx.limits,
-                               on_event=report, stand_in=ctx.stand_in())
+        given = file_tools(ctx.work, not review, ctx.settings) + [ctx.tool(t) for t in tools]
+        return await run_agent(ctx.settings, instructions, prompt, given, output_type=shape, model=model, limits=ctx.limits,
+                               on_event=report, stand_in=ctx.stand_in(), talk=talk)
     part = f"{sid}-review" if review else sid
     commands, servers = tool_commands(ctx.registry, tools), tool_servers(ctx.registry, tools, ctx.told())
-    schema = ctx.work / cli_file(part, n, harness, "schema.json") if review else None
-    if review:
-        schema.write_text(json.dumps(VERDICT_SCHEMA))
-    else:
-        (ctx.work / NEEDS_PERSON).unlink(missing_ok=True)  # one left by a try that was cut short is not this try's
+    schema = ctx.work / cli_file(part, n, harness, "schema.json")
+    schema.write_text(json.dumps(_schema(shape)))
     text, stats = await run_cli(ctx.settings, ctx.settings.model(model), f"{instructions}\n\n{cli_note(commands, servers, review)}", prompt, ctx.work,
                                 ctx.work / cli_file(part, n, harness, "jsonl"), ctx.work / cli_file(part, n, harness, "md"), ctx.told(), ctx.limits,
                                 Job(tuple(program for _, _, program, _ in commands), servers, schema, not review), stop=ctx.cancelled, on_event=report,
                                 stand_in=ctx.stand_in())
-    if review:
-        return _verdict(text), stats
-    asked += _asked_in_file(ctx, sid, n)
-    return text, stats
+    try:
+        return shape.model_validate_json(text[text.index("{"):text.rindex("}") + 1]), stats  # the JSON object in what it said
+    except ValueError as e:
+        raise AgentStopped(f"the {harness} CLI did not end with the answer it was asked for: {text[:ctx.settings.internal['error_chars']]}", stats) from e
 
 
-def _asked_in_file(ctx: Ctx, sid: str, n: int) -> list[str]:
-    """What a CLI asked a person, if it wrote NEEDS_PERSON. The file moves to the engine's folder, so a later try starts without it."""
-    file = ctx.work / NEEDS_PERSON
-    if file.is_symlink() or not file.is_file():
-        return []
-    reason = file.read_text(errors="replace").strip()[:ctx.settings.internal["reason_chars"]]
-    file.replace(ctx.work / asked_file(sid, n))
-    return [reason or f"{NEEDS_PERSON} was written without a reason"]
-
-
-async def _by_agent(ctx: Ctx, stage: dict, n: int, attempt: int, feedback: list[str]) -> End:
-    """Do the stage with its agent, or with the default agent following the stage's own file.
-    The engine's own harness runs the model, unless the model picked names a CLI: then the CLI does the work."""
-    sid, by = stage["id"], stage_by(stage)
-    goal, note = ctx.registry.flow_goal(ctx.flow), ctx.registry.stage_method(ctx.flow, sid)
+def instructions_for(ctx: Ctx, stage: dict) -> tuple[str, list[str]]:
+    """(what the one who does a stage is told before the task, its tools). In layers, the general first: the base
+    instructions (the engine's, or the flow's own file in their place), the agent's method, what the flow is for, the stage."""
+    sid = stage["id"]
+    layers = [ctx.registry.flow_instructions(ctx.flow) or base_prompt("agent")]
+    names = []
     if "agent" in stage:
         meta, method = ctx.registry.agent(stage["agent"])
-        instructions = (f"{method}\n\nIf you cannot decide from the files, call ask_for_person and stop.\n\n## The flow you are part of\n{goal}"
-                        + (f"\n\n## This stage: {sid}\n{note}" if note else ""))
+        layers.append(f"## Your method\n{method}")
         names = meta.get("tools") or []
+    layers.append(f"## The flow you are part of\n{ctx.registry.flow_goal(ctx.flow)}")
+    note = ctx.registry.stage_method(ctx.flow, sid)
+    if note:
+        layers.append(f"## This stage: {sid}\n{note}")
+    return "\n\n".join(layers), names
+
+
+async def _by_agent(ctx: Ctx, stage: dict, n: int, attempt: int, feedback: list[str], talk: list) -> End:
+    """Do the stage with its agent, or with the default agent following the stage's own file, on the runtime its model names.
+    With a conversation to go on from (`talk`), the agent is only told why its work was not accepted; else it gets the whole task."""
+    sid, by = stage["id"], stage_by(stage)
+    instructions, names = instructions_for(ctx, stage)
+    decide_ = "Decide whether you can fix this. If you can, fix it and end with done. If you cannot, end with failed and say why."
+    if talk:
+        prompt = f"Stage '{sid}' for item {ctx.item_id}: your work was not accepted.\n{feedback[-1]}\n\n{decide_}"
     else:
-        instructions = f"{DEFAULT_AGENT}\n\n## The flow you are part of\n{goal}\n\n## Your stage: {sid}\n{note}"
-        names = []
-    prompt = f"Do the stage '{sid}' for item {ctx.item_id}. Your work folder holds: {', '.join(visible_files(ctx.work))}."
-    if "done_when" in stage:  # the executor is told up front what the reviewer will judge
-        prompt += f"\nThe stage is accepted when: {stage['done_when']}"
-    if feedback:
-        prompt += "\n\nEarlier attempts failed validation. Fix these:\n" + "\n".join(feedback)
+        prompt = f"Do the stage '{sid}' for item {ctx.item_id}. Your work folder holds: {', '.join(visible_files(ctx.work))}."
+        if "done_when" in stage:  # the executor is told up front what the reviewer will judge
+            prompt += f"\nThe stage is accepted when: {stage['done_when']}"
+        if feedback:
+            prompt += "\n\nEarlier attempts at this stage did not get through:\n" + "\n".join(feedback) + f"\n\n{decide_}"
     (ctx.work / prompt_file(sid, n)).write_text(prompt)  # evidence of what the try was told
-    asked: list[str] = []
     model = ctx.registry.model_for(ctx.flow, stage, stage.get("agent"))
     harness = ctx.settings.harness_of(model)
 
@@ -203,7 +205,7 @@ async def _by_agent(ctx: Ctx, stage: dict, n: int, attempt: int, feedback: list[
         ctx.emit(sid, type_, n=n, agent=by, **data)
 
     try:
-        _, stats = await _agent_run(ctx, sid, n, instructions, prompt, names, model, report, asked)
+        said, stats = await _agent_run(ctx, sid, n, instructions, prompt, names, model, report, False, None if harness else talk)
     except CliStopped:
         ctx.store.end_attempt(attempt, "cancelled")
         ctx.emit(sid, "attempt_cancelled", n=n, script=f"the {harness} CLI")
@@ -211,15 +213,17 @@ async def _by_agent(ctx: Ctx, stage: dict, n: int, attempt: int, feedback: list[
     except Exception as e:  # the try stopped without an answer. It does not end the item: the next try is told why
         stats = getattr(e, "stats", None) or {"model_calls": 1}  # what it had used by then; not known when it could not say
         why = str(e)[:ctx.settings.internal["reason_chars"]]
+        talk.clear()  # a conversation that broke off is not gone on from
         ctx.store.end_attempt(attempt, "error", stats)
         ctx.emit(sid, "attempt_ended", n=n, error=why, **stats)
         return "error", f"the try stopped without an answer: {why}"
     ctx.store.end_attempt(attempt, "done", stats)
     ctx.emit(sid, "attempt_ended", n=n, **stats)
-    if asked:
-        ctx.store.set_attempt_outcome(attempt, "asked_for_person")
-        ctx.emit(sid, "person_asked", n=n, by=by, reason=asked[0])
-        return "needs_person", asked[0]
+    if said.outcome == "failed":  # its own decision: the stage cannot be done. Kept as a reason, so a later retry is told
+        ctx.store.set_attempt_outcome(attempt, "failed")
+        ctx.store.add_verdict(ctx.run_id, ctx.item_id, sid, n, {"by": by, "passed": False, "reason": said.reason})
+        ctx.emit(sid, "agent_failed", n=n, by=by, reason=said.reason)
+        return "failed", f"{sid}: {by} could not do it: {said.reason}"
     return None
 
 
@@ -245,13 +249,13 @@ async def _validate(ctx: Ctx, stage: dict, n: int, attempt: int) -> tuple[list[d
             meta, method = ctx.registry.agent(stage["review"])
             who, instructions, names = stage["review"], method, meta.get("tools") or []
         else:
-            who, instructions, names = "checker", CHECKER, []
+            who, instructions, names = "checker", base_prompt("reviewer"), []
         ask = (f"Stage '{sid}' for item {ctx.item_id}. Done when: {stage.get('done_when', 'your method is satisfied')}\n"
                f"The work folder holds: {', '.join(visible_files(ctx.work))}.")
         try:
             v, stats = await _agent_run(ctx, sid, n, instructions, ask, names, ctx.registry.model_for(ctx.flow, {}, stage.get("review")),  # the reviewer's own model, else the flow's
-                                        lambda t, **d: ctx.emit(sid, t, n=n, agent=who, role="reviewer", **d))
-            record({"by": who, "passed": v.passed, "reason": v.reason, "needs_person": v.needs_person, **stats})
+                                        lambda t, **d: ctx.emit(sid, t, n=n, agent=who, role="reviewer", **d), True)
+            record({"by": who, "passed": v.passed, "reason": v.reason, **stats})
         except CliStopped as e:
             ctx.store.set_attempt_outcome(attempt, "cancelled")
             ctx.emit(sid, "attempt_cancelled", n=n, script=f"the {e} CLI")
@@ -266,18 +270,21 @@ async def _validate(ctx: Ctx, stage: dict, n: int, attempt: int) -> tuple[list[d
 
 async def run_stage(ctx: Ctx, stage: dict) -> tuple[str, str]:
     """One visit of an item to a stage. Returns (outcome, reason). Outcome: passed, back (not accepted, and the
-    fail edge leads to another stage), done_early, needs_person, failed, over_budget or cancelled.
-    A try that stops with an error (the model could not be reached, an answer was cut off, a CLI failed) is a try that
-    was not accepted: the stage is tried again, told what went wrong, until its tries are used up."""
+    fail edge leads to another stage), done_early, failed, over_budget or cancelled.
+    Whether work that was not accepted is done again is for the one who did it to decide: it is told why, in the
+    conversation it already has, and fixes it or ends with failed. A try that stopped with an error (the model could not
+    be reached, an answer was cut off, a CLI failed) is told to a fresh try the same way. `tries` is only the ceiling."""
     sid, by = stage["id"], stage_by(stage)
     tries = ctx.graph.tries(sid)
     back = ctx.graph.after(sid, "fail")
+    since = ctx.retried()
+    talk: list = []  # the conversation of the agent doing this stage, from try to try
     while True:
         # Only a try that validation rejected counts against `tries`; one cut short by a stopped process does not.
         prior = ctx.tries_of(sid)
-        rejected = sum(a["outcome"] == "rejected" for a in prior)
+        rejected = sum(a["outcome"] == "rejected" and a["started"] > since for a in prior)
         if rejected >= tries:
-            return "needs_person", f"{sid}: not accepted after {rejected} of {tries} tries"
+            return "failed", f"{sid}: not accepted after {rejected} of {tries} tries"
         n = max((a["n"] for a in prior), default=0) + 1
         feedback = ctx.feedback(sid) if "run" not in stage else []  # a script cannot read reasons; it is simply run again
         spent = ctx.store.usage(ctx.run_id)["cost_usd"]
@@ -287,7 +294,7 @@ async def run_stage(ctx: Ctx, stage: dict) -> tuple[str, str]:
         model = "" if "run" in stage else ctx.settings.model_label(ctx.registry.model_for(ctx.flow, stage, stage.get("agent")))
         ctx.emit(sid, "attempt_started", n=n, by=by, model=model, feedback=bool(feedback))
 
-        end = await (_by_script(ctx, stage, n, attempt) if "run" in stage else _by_agent(ctx, stage, n, attempt, feedback))
+        end = await (_by_script(ctx, stage, n, attempt) if "run" in stage else _by_agent(ctx, stage, n, attempt, feedback, talk))
         if end is not None and end[0] == "error":  # counts as a try that was not accepted, with the engine's reason for the next one
             verdicts, end = [{"by": "engine", "passed": False, "reason": end[1]}], None
             ctx.store.add_verdict(ctx.run_id, ctx.item_id, sid, n, verdicts[0])
@@ -304,10 +311,9 @@ async def run_stage(ctx: Ctx, stage: dict) -> tuple[str, str]:
             return "passed", verdicts[-1]["reason"] if verdicts else ""
         ctx.store.set_attempt_outcome(attempt, "rejected")
         failing = next(v for v in verdicts if not v["passed"])
-        if outcome == "person":
-            why = "the reviewer asked for a person" if failing.get("needs_person") else \
-                  "the validator failed to run" if failing.get("error") else f"not accepted after {rejected + 1} of {tries} tries"
-            return "needs_person", f"{sid}: {why}. Last reason from {failing['by']}: {failing['reason']}"
+        if outcome == "failed":
+            why = "the validator failed to run" if failing.get("error") else f"not accepted after {rejected + 1} of {tries} tries"
+            return "failed", f"{sid}: {why}. Last reason from {failing['by']}: {failing['reason']}"
         if back != sid:  # the fail edge leads to an earlier stage: the item goes there and works its way back
             return "back", f"{failing['by']}: {failing['reason']}"
 

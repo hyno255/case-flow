@@ -3,11 +3,12 @@
 exercised with no key and at no cost.
 
 The engine calls it once per model request. On stdin:
-    {"stage", "review", "prompt", "results": [{"tool", "content"}]}   # the tool results so far, oldest first
+    {"stage", "review", "prompt", "results": [{"tool", "content"}]}   # the tool results since the prompt, oldest first
 It prints what the model would do next:
     {"calls": [{"tool", "args"}]}   call these tools
-    {"text": "..."}                 the work is done
-    {"verdict": {"passed", "reason", "needs_person"}}   a reviewer's answer (when "review" is true)
+    {"text": "..."}                 the stage is done
+    {"failed": "..."}               the stage cannot be done, and why
+    {"verdict": {"passed", "reason"}}   a reviewer's answer (when "review" is true)
 
 It plays the analyst, the default agent (fix, report) and the reviewer. One forced failure: the analyst leaves a chain
 link without a file citation unless the prompt carries the check script's complaint, so a second try can only pass if
@@ -43,13 +44,13 @@ def analyse(prompt: str, results: list) -> dict:
         return {"calls": [{"tool": "deps-why", "args": {"package": package}},
                           {"tool": "sbom-query", "args": {"sbom_file": "image-sbom.json", "package": package}},
                           {"tool": "sbom-query", "args": {"sbom_file": "base-sbom.json", "package": package}}]}
-    if "write_file" in seen or "ask_for_person" in seen:
+    if "write_file" in seen:
         return {"text": "Done."}
     path = loaded(of(results, "deps-why")[0]).get("path", [])
     sboms = {j.get("file"): j for j in map(loaded, of(results, "sbom-query"))}
     image, base = sboms.get("image-sbom.json", {}), sboms.get("base-sbom.json", {})
     if not path and not image.get("found"):
-        return call("ask_for_person", reason=f"{package} is in neither dependency-tree.json nor image-sbom.json. Check whether the scanner flagged the right service.")
+        return {"failed": f"{package} is in neither dependency-tree.json nor image-sbom.json. Check whether the scanner flagged the right service."}
     told = "cites no file" in prompt  # did the check script's reason reach this try?
     links = [f"{a['name']} depends on {b['name']} {b.get('version', '')} (file: dependency-tree.json)" for a, b in zip(path, path[1:])]
     links.append(f"{package} {image.get('version', '')} is in the {image.get('layer', 'unknown layer')} of the image" + (" (file: image-sbom.json)" if told else ""))
@@ -62,7 +63,7 @@ def analyse(prompt: str, results: list) -> dict:
 
 def fix(prompt: str, results: list) -> dict:
     seen, reads = [r["tool"] for r in results], of(results, "read_file")
-    if "write_file" in seen or "ask_for_person" in seen:
+    if "write_file" in seen:
         return {"text": "Done."}
     if len(reads) < 2:
         return call("read_file", path=("origin.md", "candidates.json")[len(reads)])
@@ -79,8 +80,8 @@ def fix(prompt: str, results: list) -> dict:
         if tags:
             lines.append(f"Rebuild on base image tag {tags[-1]['tag']}, which brings {tags[-1]['brings']}. Risk: low, same base line.")
     if not lines:
-        return call("ask_for_person", reason=f"candidates.json shows no release or tag with {cand['package']} {cand['fixed_in']} or later. "
-                                             "Check whether the fix has been published yet.")
+        return {"failed": f"candidates.json shows no release or tag with {cand['package']} {cand['fixed_in']} or later. "
+                          "Check whether the fix has been published yet."}
     return call("write_file", path="fix.md", content=f"# Fix for {cand['package']}\n\n" + "\n".join(lines) + "\n\nEvidence: candidates.json\n")
 
 
@@ -114,7 +115,7 @@ def review(stage: str, results: list) -> dict:
     else:
         passed = "Finding: " in text and "Fix: " in text
     reason = f"{target} satisfies the sentence." if passed else f"{target} does not show what the sentence asks for."
-    return {"verdict": {"passed": passed, "reason": reason, "needs_person": False}}
+    return {"verdict": {"passed": passed, "reason": reason}}
 
 
 def main() -> None:

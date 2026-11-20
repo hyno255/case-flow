@@ -18,7 +18,7 @@ ITEM_STATE = {name: bar for name, (_, _, bar) in ENDINGS.items() if bar}
 FIXED = ("seq", "ts", "run", "item", "stage", "type")  # the fields every event has; the rest is what the event carries
 USE = ("tokens_in", "tokens_out", "cost", "model_calls", "tool_calls", "cli_runs")  # added up from the calls into every span above them
 PARTS = ("agent", "script", "check", "review")
-RUN_MARKS = {"finish_ended": "finish script", "run_interrupted": "interrupted", "run_resumed": "resumed", "cancel_requested": "cancel asked for"}
+RUN_MARKS = {"finish_ended": "finish script", "run_interrupted": "interrupted", "run_resumed": "resumed", "run_retried": "retried", "cancel_requested": "cancel asked for"}
 
 
 def epoch(iso: str | None) -> float | None:
@@ -182,12 +182,12 @@ def build(store, run, show: dict, item_id: str | None = None, live: bool = False
                 if "seconds" in d:
                     ph["start"] = min(ph["start"], ts - d["seconds"])
             ph["state"] = "ok" if d.get("passed") else "fail"
-            ph["note"] = "pass" if d.get("passed") else "asked for a person" if d.get("needs_person") else "fail"
+            ph["note"] = "pass" if d.get("passed") else "fail"
             ph["facts"].append(("verdict", ph["note"]))
             if d.get("reason"):
                 ph["blocks"].append(("output" if ph["kind"] == "check" else "reason", _text(d["reason"], block)))
-        elif t == "person_asked":
-            tr["blocks"].append(("asked for a person", _text(d.get("reason", ""), block)))
+        elif t == "agent_failed":
+            tr["blocks"].append(("could not be done", _text(d.get("reason", ""), block)))
         elif t in ("attempt_interrupted", "attempt_cancelled"):
             tr["facts"].append(("cut short", "the process stopped" if t == "attempt_interrupted" else f"{d.get('script', 'a script')} was stopped: the run was cancelled"))
 

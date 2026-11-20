@@ -14,7 +14,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from agentflow.workers.procs import STOPPED, TIMED_OUT, run_proc
-from agentflow.engine.recovery import claim_resume, request_cancel, resume_run, sweep
+from agentflow.engine.recovery import claim_resume, claim_retry, request_cancel, resume_run, retry_run, sweep
 from agentflow.engine.runner import start_flow
 from agentflow.records.status import run_status
 from support import CHANGE, ROOT, Home, make_app
@@ -87,18 +87,18 @@ class Recovery(Home):
         self.assertEqual(events.count("attempt_interrupted"), 3)
         self.assertNotIn("finish_ended", events)  # the flow's finish script waits until every item has ended
         before = self.items(run_id)
-        self.assertEqual(before["SEC-1045"]["ended_as"], "needs_person")  # it had ended before the kill
+        self.assertEqual(before["SEC-1045"]["ended_as"], "failed")  # it had ended before the kill
         self.assertIsNone(before["SEC-1042"]["ended_at"])
 
         asyncio.run(resume_run(self.settings, self.store, run_id, stale_after=0))
 
         after = self.items(run_id)
         self.assertEqual({k: v["ended_as"] for k, v in after.items()},
-                         {"SEC-1042": "done", "SEC-1043": "done", "SEC-1044": "needs_person", "SEC-1045": "needs_person"})
+                         {"SEC-1042": "done", "SEC-1043": "done", "SEC-1044": "failed", "SEC-1045": "failed"})
         self.assertEqual(after["SEC-1045"]["ended_at"], before["SEC-1045"]["ended_at"])  # an ended item is left alone
         for item in ("SEC-1042", "SEC-1043", "SEC-1044"):
             self.assertEqual(self.tries(run_id, item, "gather"), [(1, "passed")], item)  # a finished stage is not done again
-        # the interrupted try does not count against the two tries, and the first try's reason reached the third
+        # the interrupted try does not count against the stage's tries, and the first try's reason reached the third
         self.assertEqual(self.tries(run_id, "SEC-1042", "analyse"), [(1, "rejected"), (2, "interrupted"), (3, "passed")])
         work = self.store.path(after["SEC-1042"])
         self.assertIn("cites no file", (work / "attempts/analyse-3.prompt.md").read_text())
@@ -109,9 +109,52 @@ class Recovery(Home):
         self.assertEqual(self.store.one("SELECT COUNT(*) n FROM events WHERE run_id = ? AND type = 'finish_ended'", run_id)["n"], 1)
         run = self.store.one("SELECT * FROM runs WHERE id = ?", run_id)
         self.assertEqual(run_status(run, self.stale)[0], "finished")
-        self.assertIn("2 triaged, 2 needs a person", (self.store.path(run) / "output/index.html").read_text())
+        self.assertIn("2 triaged, 2 failed", (self.store.path(run) / "output/index.html").read_text())
         with self.assertRaisesRegex(ValueError, "has finished"):
             claim_resume(self.store, run_id, stale_after=0)
+
+    def test_a_failed_item_can_be_retried(self):
+        run_id = asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))
+        before = self.items(run_id)
+        self.assertEqual((before["SEC-1044"]["ended_as"], before["SEC-1045"]["ended_as"]), ("failed", "failed"))
+        with self.assertRaisesRegex(ValueError, "ended as done"):
+            claim_retry(self.store, run_id, "SEC-1042")
+
+        # a person removes what blocked SEC-1044 (no fixed release was listed), then has the run's failed items retried
+        work = self.store.path(before["SEC-1044"])
+        cand = json.loads((work / "candidates.json").read_text())
+        for entry in (cand.get("direct_dependency") or {}).get("releases", []) + cand.get("base_image_tags", []):
+            entry["fixed"] = True
+            entry.pop("note", None)
+        (work / "candidates.json").write_text(json.dumps(cand))
+        asyncio.run(retry_run(self.settings, self.store, run_id))
+
+        after = self.items(run_id)
+        self.assertEqual({k: v["ended_as"] for k, v in after.items()}, {"SEC-1042": "done", "SEC-1043": "done", "SEC-1044": "done", "SEC-1045": "failed"})
+        self.assertEqual(after["SEC-1042"]["ended_at"], before["SEC-1042"]["ended_at"])  # an item that ended as done is left alone
+        # each item goes on at the stage where it stopped, and is told what its earlier try said
+        self.assertEqual(self.tries(run_id, "SEC-1044", "gather"), [(1, "passed")])
+        self.assertEqual(self.tries(run_id, "SEC-1044", "fix"), [(1, "failed"), (2, "passed")])
+        self.assertIn("- attempt 1, default agent: candidates.json shows no release or tag", (work / "attempts/fix-2.prompt.md").read_text())
+        self.assertTrue((work / "report.md").is_file())
+        self.assertEqual(self.tries(run_id, "SEC-1045", "analyse"), [(1, "failed"), (2, "failed")])  # nothing changed for it: its agent says so again
+        run = self.store.one("SELECT * FROM runs WHERE id = ?", run_id)
+        self.assertEqual(run_status(run, self.stale)[0], "finished")
+        self.assertIn("3 triaged, 1 failed", (self.store.path(run) / "output/index.html").read_text())  # the flow's finish script ran again
+        log = (self.store.path(run) / "output/run.log").read_text()
+        for text in ("run       retried: SEC-1044, SEC-1045", "SEC-1044  continues at fix"):
+            self.assertIn(text, log)
+
+        # from the page: the button is there while an item has not ended as done, and one item can be named
+        with TestClient(make_app(self.settings, self.store)) as c:
+            self.assertIn(f'data-post="/api/runs/{run_id}/retry"', c.get(f"/runs/{run_id}").text)
+            self.assertEqual(c.post(f"/api/runs/{run_id}/retry?item=SEC-1044", headers=CHANGE).status_code, 409)  # it ended as done
+            again = c.post(f"/api/runs/{run_id}/retry?item=SEC-1045", headers=CHANGE)
+            self.assertEqual((again.status_code, again.json()["items"]), (202, ["SEC-1045"]))
+            deadline = time.time() + 30
+            while not self.store.run(run_id)["ended"] and time.time() < deadline:
+                time.sleep(0.1)
+            self.assertEqual(self.tries(run_id, "SEC-1045", "analyse")[-1], (3, "failed"))
 
     def test_cancel_a_live_run_and_close_a_dead_one(self):
         self.add_gate()
@@ -137,7 +180,7 @@ class Recovery(Home):
         # the check script that was running was stopped, and no item went on to its next stage
         items = self.items(run_id)
         self.assertEqual({k: v["ended_as"] for k, v in items.items()},
-                         {"SEC-1042": "cancelled", "SEC-1043": "cancelled", "SEC-1044": "cancelled", "SEC-1045": "needs_person"})
+                         {"SEC-1042": "cancelled", "SEC-1043": "cancelled", "SEC-1044": "cancelled", "SEC-1045": "failed"})
         self.assertIn("gate.sh", items["SEC-1042"]["reason"])
         self.assertEqual(self.tries(run_id, "SEC-1042", "analyse")[-1], (2, "cancelled"))
         self.assertEqual(self.tries(run_id, "SEC-1042", "fix"), [])
@@ -173,7 +216,7 @@ class Recovery(Home):
         self.assert_scripts_gone(within=0)  # the hold is still in place: the scripts were stopped when the time ran out
         items = self.items(run_id)
         self.assertEqual({k: v["ended_as"] for k, v in items.items()},
-                         {"SEC-1042": "timed_out", "SEC-1043": "timed_out", "SEC-1044": "timed_out", "SEC-1045": "needs_person"})
+                         {"SEC-1042": "timed_out", "SEC-1043": "timed_out", "SEC-1044": "timed_out", "SEC-1045": "failed"})
         self.assertIn("not finished after 0.01 minutes", items["SEC-1042"]["reason"])
         self.assertEqual(self.tries(run_id, "SEC-1042", "analyse")[-1], (2, "timed_out"))
         self.assertIsNotNone(self.store.one("SELECT ended FROM runs WHERE id = ?", run_id)["ended"])

@@ -76,9 +76,9 @@ class Runs(Site):
 
             # the list of runs: counts, cost, and the flow's output to open
             row = c.get("/api/runs").json()[0]
-            self.assertEqual([(k["n"], k["label"]) for k in row["counts"]], [(2, "done"), (2, "needs a person")])
+            self.assertEqual([(k["n"], k["label"]) for k in row["counts"]], [(2, "done"), (2, "failed")])
             self.assertEqual(row["cost"]["text"], "$0")  # the stand-in is free, which is known
-            for text in (run_id, "2 done", "2 needs a person", f'href="/runs/{run_id}/output/index.html"'):
+            for text in (run_id, "2 done", "2 failed", f'href="/runs/{run_id}/output/index.html"'):
                 self.assertIn(text, home)
             # the list of runs starts nothing: there may be many flows, and each is started from its own page
             for page in (home, c.get("/sources").text, c.get("/sources/security-tickets").text, c.get("/flows").text):
@@ -96,7 +96,7 @@ class Runs(Site):
             run_id = self.run_once(c)
             run = c.get(f"/api/runs/{run_id}").json()
             self.assertEqual({i["id"]: (i["status"], i["stage"]) for i in run["items"]},
-                             {"SEC-1042": ("done", "report"), "SEC-1043": ("done", "report"), "SEC-1044": ("needs a person", "fix"), "SEC-1045": ("needs a person", "analyse")})
+                             {"SEC-1042": ("done", "report"), "SEC-1043": ("done", "report"), "SEC-1044": ("failed", "fix"), "SEC-1045": ("failed", "analyse")})
             self.assertEqual(run["items"][0]["title"], "checkout-api · libexample-xml")
             self.assertEqual((run["status"], run["by"]), ("finished", "by hand"))
             page = c.get(f"/runs/{run_id}").text
@@ -122,7 +122,7 @@ class Runs(Site):
             nodes = {n["id"]: n for n in c.get(f"/api/runs/{run_id}/flow").json()["graph"]["nodes"]}
             self.assertEqual(list(nodes), [":source", "gather", "analyse", "fix", "report", ":end"])
             self.assertEqual(nodes[":end"]["lines"], ["scripts/report.py", "6 files"])
-            self.assertEqual((nodes["analyse"]["state"], nodes["analyse"]["lines"][-2:]), ("done", ["3 passed", "7 tries"]))  # SEC-1045 asked for a person at analyse
+            self.assertEqual((nodes["analyse"]["state"], nodes["analyse"]["lines"][-2:]), ("done", ["3 passed", "7 tries"]))  # SEC-1045's analyst ended analyse as failed
             self.assertEqual((nodes[":end"]["state"], nodes[":end"]["href"]), ("done", f"/runs/{run_id}/output"))  # a run ends at its output folder
             stages = c.get(f"/api/runs/{run_id}/flow").json()["stages"]
             self.assertEqual([(s["id"], s["by"], s["passed"], s["tries"], s["now"]) for s in stages][:2],
@@ -134,14 +134,14 @@ class Runs(Site):
             for text in ("files?file=report.md", "/items/SEC-1042/base-sbom.json"):
                 self.assertIn(text, done)
             for tab in ("", "/trace"):
-                self.assertIn('<p class="alert">libexample-png is in neither dependency-tree.json nor image-sbom.json', c.get(f"/runs/{run_id}/items/SEC-1045{tab}").text)
+                self.assertIn('<p class="alert">analyse: origin-analyst could not do it: libexample-png is in neither dependency-tree.json nor image-sbom.json', c.get(f"/runs/{run_id}/items/SEC-1045{tab}").text)
 
 
             # a finished run's pages are not fetched again, and there is no log tab and no event stream: the run's lines are a file in its output
             self.assertNotIn("data-refresh", c.get(f"/runs/{run_id}/trace").text)
             self.assertEqual((c.get(f"/runs/{run_id}/log").status_code, c.get(f"/api/events?run={run_id}").status_code), (404, 404))
             lines = c.get(f"/runs/{run_id}/output/run.log").text
-            for text in ("run       started: vuln-triage, 4 items", "SEC-1042  analyse  try 2  origin-analyst  (with feedback)", "SEC-1045  ended: needs_person", "run       ended"):
+            for text in ("run       started: vuln-triage, 4 items", "SEC-1042  analyse  try 2  origin-analyst  (with feedback)", "SEC-1045  ended: failed", "run       ended"):
                 self.assertIn(text, lines)
 
     def test_the_trace_names_who_ran_what(self):
@@ -451,9 +451,9 @@ class Design(Site):
             self.assertGreater(g["height"], g["width"])
             # a stage with something that can fail tries again itself: a dashed loop, bounded by its tries
             self.assertEqual([e for e in edges if e[2] == "fail"], [(s, s, "fail", "loop") for s in ("analyse", "fix", "report")])
-            self.assertEqual({e["label"] for e in g["edges"] if e["on"] == "fail"}, {"fail · up to 2"})
+            self.assertEqual({e["label"] for e in g["edges"] if e["on"] == "fail"}, {"fail · up to 5"})
             page = c.get("/flows/vuln-triage").text
-            for text in ("<svg", 'class="g-edge fail loop"', 'class="g-edge pass next"', "fail · up to 2", 'id="stage-analyse"', "stroke-dasharray"):
+            for text in ("<svg", 'class="g-edge fail loop"', 'class="g-edge pass next"', "fail · up to 5", 'id="stage-analyse"', "stroke-dasharray"):
                 self.assertIn(text, page + c.get("/static/app.css").text)
             self.assertNotIn("g-edge fail back", page)
 
@@ -466,7 +466,7 @@ class Design(Site):
                               "on_fail": "default", "next": "default"})
             self.assertEqual((rows["agent"]["href"], rows["check"]["href"]), ("/agents/origin-analyst", "/flows/vuln-triage/files?file=scripts/chain-cites-files.py"))
             self.assertEqual([link["href"] for link in rows["tools"]["links"]], ["/tools/sbom-query", "/tools/deps-why"])
-            self.assertEqual((rows["tries"]["v"], rows["on_fail"]["v"], rows["next"]["v"], rows["model"]["v"]), ("2", "analyse", "fix", "luna"))
+            self.assertEqual((rows["tries"]["v"], rows["on_fail"]["v"], rows["next"]["v"], rows["model"]["v"]), ("5", "analyse", "fix", "luna"))
             self.assertEqual((analyse["md"], analyse["md_href"]), ("stages/analyse.md", "/flows/vuln-triage/files?file=stages/analyse.md"))
             config = {r["k"]: r for r in flow["config"]}
             self.assertEqual({k: r["mark"] for k, r in config.items()},  # every limit the flow runs under, none of them its own

@@ -20,11 +20,11 @@ main{max-width:980px;margin:0 auto;padding:32px 16px 64px}h1{font-size:28px;line
 p.sub{color:var(--mute);margin:0 0 24px}a{color:inherit}table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line)}
 th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;font-size:14.5px}th{color:var(--mute);font-weight:600;font-size:13px}
 .wrap{overflow-x:auto}.tag{display:inline-block;padding:1px 8px;border-radius:99px;border:1px solid currentColor;font-size:12.5px;white-space:nowrap}
-.done{color:var(--ok)}.needs_person{color:var(--warn)}.failed,.timed_out,.over_budget,.cancelled{color:var(--bad)}
+.done{color:var(--ok)}.failed,.timed_out,.over_budget,.cancelled{color:var(--bad)}
 .report{background:var(--card);border:1px solid var(--line);padding:8px 20px 16px}
 code{font:13.5px ui-monospace,monospace}.note{border-left:3px solid var(--warn);padding:8px 14px;background:var(--card);margin:16px 0}
 """
-STATES = {"done": "Triaged", "needs_person": "Needs a person", "failed": "Failed", "timed_out": "Timed out",
+STATES = {"done": "Triaged", "failed": "Failed", "timed_out": "Timed out",
           "over_budget": "Stopped at cost cap", "cancelled": "Cancelled", None: "Not finished"}
 
 

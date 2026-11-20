@@ -21,7 +21,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from agentflow.plugins.health import check_tools
 from agentflow.records.layout import OUTPUT, confined
 from agentflow.plugins.registry import installed
-from agentflow.engine.recovery import claim_resume, request_cancel, resume_run, sweep
+from agentflow.engine.recovery import claim_resume, claim_retry, request_cancel, resume_run, retry_run, sweep
 from agentflow.engine.runner import checked, run_due, start_flow
 from agentflow.engine.schedule import set_schedule, tick
 from . import catalog, views
@@ -237,6 +237,15 @@ def create_app(settings, store, schedule: bool = True, hosts: tuple[str, ...] = 
             raise HTTPException(409, str(e))
         spawn([run_id], resume_run(settings, store, run_id, claimed=True))
         return {"resumed": run_id, "go": f"/runs/{run_id}"}
+
+    @app.post("/api/runs/{run_id}/retry", status_code=202)
+    async def api_retry(run_id: str, item: str | None = None):
+        try:
+            items = claim_retry(store, run_id, item)  # decided here, so the answer says whether this request got the run
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        spawn([run_id], retry_run(settings, store, run_id, claimed=True))
+        return {"retried": run_id, "items": items, "go": f"/runs/{run_id}"}
 
     @app.post("/api/runs/{run_id}/cancel")
     async def api_cancel(run_id: str):

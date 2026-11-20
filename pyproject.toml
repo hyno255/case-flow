@@ -23,5 +23,5 @@ build-backend = "setuptools.build_meta"
 packages = ["agentflow", "agentflow.engine", "agentflow.plugins", "agentflow.records", "agentflow.workers", "agentflow.web"]
 
 [tool.setuptools.package-data]
-"agentflow" = ["defaults.yaml"]
+"agentflow" = ["defaults.yaml", "workers/prompts/*.md"]
 "agentflow.web" = ["templates/*.html", "static/*"]
