@@ -20,7 +20,7 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, ToolReturnPart  # 
 from pydantic_ai.usage import RunUsage, UsageLimits  # noqa: E402
 
 from agentflow.workers.harness import mcp_argv, not_ready  # noqa: E402
-from agentflow.records.layout import confined, visible_files  # noqa: E402
+from agentflow.records.layout import confined, files_beside, visible_files  # noqa: E402
 from agentflow.workers.procs import run_proc  # noqa: E402
 
 def base_prompt(name: str) -> str:
@@ -89,15 +89,17 @@ def why_stopped(e: Exception, limits: dict) -> str:
 
 # ---------- tools an agent may be handed ----------
 
-def file_tools(work: Path, can_write: bool, settings) -> list[Tool]:
+def file_tools(work: Path, can_write: bool, settings, beside: bool = False) -> list[Tool]:
+    """With `beside`, the files in the folders next to the work folder are listed and can be read as ../<folder>/<file>:
+    how the joined items of a run are handed what each item's stages wrote."""
     def list_files() -> list[str]:
         """List the files in the work folder."""
-        return visible_files(work)
+        return visible_files(work) + (files_beside(work) if beside else [])
 
     def read_file(path: str) -> str:
         """Read a text file from the work folder."""
         try:
-            return confined(work, path).read_text()[:settings.internal["read_chars"]]
+            return confined(work, path, beside=beside).read_text()[:settings.internal["read_chars"]]
         except (ValueError, OSError) as e:
             return f"error: {e}"
 

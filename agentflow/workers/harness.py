@@ -51,6 +51,7 @@ class Job:
     servers: tuple = ()         # (name, argv, env) of each tool that is an MCP server
     schema: Path | None = None  # the file with the JSON Schema its answer must have
     write: bool = True          # False for a reviewer: it reads the work folder and changes nothing
+    read: tuple = ()            # folders outside the work folder it is to read: the items' folders, for a `once` stage
 
 
 def _toml(value) -> str:
@@ -87,6 +88,7 @@ def _claude_args(model: str, last: Path, job: Job) -> list[str]:
     return ["-p", "--output-format", "json", "--permission-mode", "acceptEdits" if job.write else "default", "--model", model,
             *(["--mcp-config", json.dumps({"mcpServers": servers})] if servers else []),
             *(["--json-schema", job.schema.read_text()] if job.schema else []),
+            *(x for folder in job.read for x in ("--add-dir", str(folder))),
             *(["--allowedTools", *allowed] if allowed else [])]
 
 

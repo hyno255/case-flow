@@ -1,4 +1,5 @@
-"""The run pipeline: fetch the flow's source, route the items the flow accepts to it, work them in parallel, run the flow's finish script.
+"""The run pipeline: fetch the flow's source, route the items the flow accepts to it, work them in parallel, and, when the
+flow has stages that are done once for the run, join the items and do those.
 A run is always a run of one flow, started by a person or by the flow's own schedule. A source only says how items
 are got and what it hands over; it starts nothing.
 What happens to a run afterwards (resume, cancel) is in recovery.py.
@@ -11,10 +12,10 @@ import uuid
 from pathlib import Path
 
 from agentflow.workers.agents import check_ready
-from agentflow.records.layout import ITEMS, OUTPUT, PLUGINS, new_fetch_folder, new_run_folder
+from agentflow.records.layout import ALL, ITEMS, OUTPUT, PLUGINS, new_fetch_folder, new_run_folder
 from agentflow.plugins.registry import Registry, accepts, installed, run_plugins
 from agentflow.workers.procs import run_proc
-from agentflow.engine.stages import Ctx, run_item, run_script, run_told
+from agentflow.engine.stages import Ctx, run_item
 from agentflow.records.store import now
 
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -55,7 +56,7 @@ async def fetch(settings, registry: Registry, source: str, out: Path) -> list[di
     return items
 
 
-# ---------- one run: create, work, finish ----------
+# ---------- one run: create, work, end ----------
 
 def create_run(settings, store, live: Registry, flow: str, *, source, fetch_id, trial) -> tuple[str, Path]:
     if settings.stand_in and "stand_in" not in live.flow(flow):
@@ -74,7 +75,7 @@ def create_run(settings, store, live: Registry, flow: str, *, source, fetch_id, 
 
 
 async def execute(settings, store, run_id: str, todo: list[tuple[dict, Path, str | None]]) -> str:
-    """Work the given items of a run, then run the flow's finish script and end the run. `todo` is (item, work folder, stage to start at)."""
+    """Work the given items of a run, then the flow's `once` stages if it has any, and end the run. `todo` is (item, work folder, stage to start at)."""
     run = store.run(run_id)
     snap = run_plugins(settings, store, run)  # the plugin files exactly as the run first saw them
     flow, trial = run["flow"], bool(run["trial"])
@@ -104,27 +105,32 @@ async def execute(settings, store, run_id: str, todo: list[tuple[dict, Path, str
 
     try:
         await asyncio.gather(*(one(*t) for t in todo))
-        await run_finish(settings, store, snap, run, limits)
+        if graph.join:
+            await one(*join(store, run, graph, redo=bool(todo)))
         finish(store, run_id)  # on the loop's own thread: the store's one connection is never used by two threads
     finally:
         alive.cancel()
     return run_id
 
 
-async def run_finish(settings, store, snap: Registry, run, limits: dict) -> None:
-    """The flow's own `finish` script, once, when every item of the run has ended. It is how a flow makes what the run
-    puts out: a report, a summary, a message. It works in the run's output folder, and its input is the run and how
-    each item ended, as JSON. What it writes, and whether it writes anything, is the flow's business. A cancelled run skips it."""
-    script = snap.flow(run["flow"]).get("finish")
-    if not script or store.cancel_requested(run["id"]):
-        return
-    flow_dir, out, trial = snap.dir("flows", run["flow"]), store.path(run) / OUTPUT, bool(run["trial"])
-    told = {"run": run["id"], "flow": run["flow"], "trial": trial, "started": run["started"],
+def join(store, run, graph, redo: bool) -> tuple[dict, Path, str]:
+    """Every item of the run has ended, so the items are joined: from here the run is one unit of work, which does the
+    flow's `once` stages the way an item does the others, in a folder of its own beside the items'. What it is handed is
+    the run and how each item ended, whatever the ending: what to make of an item that failed is the stage's business.
+    Returns (that, its folder, the stage it starts at). With `redo` an item was worked in this go, so the stages are
+    done from the join again; without, the unit goes on where its latest try left it."""
+    told = {"id": ALL, "run": run["id"], "flow": run["flow"], "trial": bool(run["trial"]), "started": run["started"],
             "items": [{"id": it["item_id"], "ended_as": it["ended_as"], "reason": it["reason"], "folder": str(store.path(it).resolve()),
-                       "item": json.loads(it["payload"])} for it in store.items(run["id"])]}
-    code, said, seconds = await run_script(settings, store, run["id"], flow_dir / script, out, json.dumps(told),
-                                           run_told(settings, flow_dir, run["flow"], run["id"], out, trial), limits)
-    store.emit(run["id"], None, None, "finish_ended", script=script, exit_code=code, seconds=seconds, output=said[-settings.internal["event_chars"]:])
+                       "item": json.loads(it["payload"])} for it in store.items(run["id"], joined=False)]}
+    work, row = store.path(run) / ITEMS / ALL, store.item(run["id"], ALL)
+    if row is None:
+        work.mkdir()
+        store.add_item(run["id"], run["flow"], ALL, work, {"id": ALL, "what": "every item of the run, joined"})
+    elif row["ended_at"]:
+        store.reopen_item(run["id"], ALL)
+    elif not redo:
+        return told, work, graph.position(*store.last_try(run["id"], ALL), start=graph.join)
+    return told, work, graph.join
 
 
 def finish(store, run_id: str) -> None:

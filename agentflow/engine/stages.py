@@ -1,4 +1,5 @@
-"""One item on the flow's graph: do a stage, validate it, and follow the edge its outcome picks.
+"""One unit of work on the flow's graph: do a stage, validate it, and follow the edge its outcome picks.
+The unit is an item, or, from the flow's first `once` stage on, the run's items joined (records/layout.py: ALL).
 
 Per try: do -> check script -> reviewer -> decide. The one who does a stage ends with its own outcome: done or failed.
 Done work is validated, and the first fail ends the try. Work that was not accepted goes back to the one who did it,
@@ -14,7 +15,7 @@ from pathlib import Path
 from agentflow.workers.agents import AgentStopped, Outcome, Verdict, base_prompt, file_tools, run_agent, plugin_tool
 from agentflow.plugins.graph import END, Graph, stage_by
 from agentflow.workers.harness import CliStopped, Job, cli_note, run_cli, tool_commands, tool_servers
-from agentflow.records.layout import ATTEMPTS, VERDICTS, cli_file, prompt_file, verdict_file, visible_files
+from agentflow.records.layout import ALL, ATTEMPTS, VERDICTS, cli_file, files_beside, prompt_file, verdict_file, visible_files
 from agentflow.workers.procs import DONE_EARLY, STOPPED, run_proc
 
 
@@ -58,9 +59,27 @@ class Ctx:
     def flow_dir(self) -> Path:
         return self.registry.dir("flows", self.flow)
 
+    @property
+    def joined(self) -> bool:
+        """True for the unit that does the flow's `once` stages: the run's items, joined."""
+        return self.item_id == ALL
+
+    @property
+    def subject(self) -> str:
+        return f"all items of run {self.run_id}" if self.joined else f"item {self.item_id}"
+
+    def holds(self) -> str:
+        """What an agent is told it has to work with: its work folder, and for the joined items how each ended and where its files are."""
+        mine = f"Your work folder holds: {', '.join(visible_files(self.work)) or 'nothing yet'}."
+        if not self.joined:
+            return mine
+        ended = "\n".join(f"- {i['id']}: {i['ended_as']}" + (f" ({i['reason']})" if i["reason"] else "") for i in self.item["items"])
+        return (f"Every item of the run has ended:\n{ended or '- the run had no items'}\n"
+                f"You can read, and not change, what each item's stages wrote: {', '.join(files_beside(self.work)) or 'nothing'}.\n{mine}")
+
     def told(self) -> dict:
         """What every script of an item, and a CLI doing a stage, is told: what the run's scripts are told, and which item."""
-        return {**run_told(self.settings, self.flow_dir, self.flow, self.run_id, self.output, self.trial), "AGENTFLOW_ITEM_ID": self.item_id}
+        return {**run_told(self.settings, self.flow_dir, self.flow, self.run_id, self.output, self.trial), **({} if self.joined else {"AGENTFLOW_ITEM_ID": self.item_id})}
 
     def cancelled(self) -> bool:
         return self.store.cancel_requested(self.run_id)
@@ -118,7 +137,7 @@ End = tuple[str, str] | None  # (outcome, reason) when the stage ends here; None
 
 
 async def _by_script(ctx: Ctx, stage: dict, n: int, attempt: int) -> End:
-    """Do the stage by running its script."""
+    """Do the stage by running its script. On its input: the item as the source gave it, or for a `once` stage the run and how each item ended."""
     sid = stage["id"]
     code, out, seconds = await ctx.script(stage["run"], json.dumps(ctx.item))
     if code == STOPPED:
@@ -149,7 +168,7 @@ async def _agent_run(ctx: Ctx, sid: str, n: int, instructions: str, prompt: str,
     shape = Verdict if review else Outcome
     harness = ctx.settings.harness_of(model)
     if not harness:
-        given = file_tools(ctx.work, not review, ctx.settings) + [ctx.tool(t) for t in tools]
+        given = file_tools(ctx.work, not review, ctx.settings, beside=ctx.joined) + [ctx.tool(t) for t in tools]
         return await run_agent(ctx.settings, instructions, prompt, given, output_type=shape, model=model, limits=ctx.limits,
                                on_event=report, stand_in=ctx.stand_in(), talk=talk)
     part = f"{sid}-review" if review else sid
@@ -158,7 +177,8 @@ async def _agent_run(ctx: Ctx, sid: str, n: int, instructions: str, prompt: str,
     schema.write_text(json.dumps(_schema(shape)))
     text, stats = await run_cli(ctx.settings, ctx.settings.model(model), f"{instructions}\n\n{cli_note(commands, servers, review)}", prompt, ctx.work,
                                 ctx.work / cli_file(part, n, harness, "jsonl"), ctx.work / cli_file(part, n, harness, "md"), ctx.told(), ctx.limits,
-                                Job(tuple(program for _, _, program, _ in commands), servers, schema, not review), stop=ctx.cancelled, on_event=report,
+                                Job(tuple(program for _, _, program, _ in commands), servers, schema, not review, (ctx.work.parent,) if ctx.joined else ()),
+                                stop=ctx.cancelled, on_event=report,
                                 stand_in=ctx.stand_in())
     try:
         return shape.model_validate_json(text[text.index("{"):text.rindex("}") + 1]), stats  # the JSON object in what it said
@@ -190,9 +210,9 @@ async def _by_agent(ctx: Ctx, stage: dict, n: int, attempt: int, feedback: list[
     instructions, names = instructions_for(ctx, stage)
     decide_ = "Decide whether you can fix this. If you can, fix it and end with done. If you cannot, end with failed and say why."
     if talk:
-        prompt = f"Stage '{sid}' for item {ctx.item_id}: your work was not accepted.\n{feedback[-1]}\n\n{decide_}"
+        prompt = f"Stage '{sid}' for {ctx.subject}: your work was not accepted.\n{feedback[-1]}\n\n{decide_}"
     else:
-        prompt = f"Do the stage '{sid}' for item {ctx.item_id}. Your work folder holds: {', '.join(visible_files(ctx.work))}."
+        prompt = f"Do the stage '{sid}' for {ctx.subject}. {ctx.holds()}"
         if "done_when" in stage:  # the executor is told up front what the reviewer will judge
             prompt += f"\nThe stage is accepted when: {stage['done_when']}"
         if feedback:
@@ -250,8 +270,7 @@ async def _validate(ctx: Ctx, stage: dict, n: int, attempt: int) -> tuple[list[d
             who, instructions, names = stage["review"], method, meta.get("tools") or []
         else:
             who, instructions, names = "checker", base_prompt("reviewer"), []
-        ask = (f"Stage '{sid}' for item {ctx.item_id}. Done when: {stage.get('done_when', 'your method is satisfied')}\n"
-               f"The work folder holds: {', '.join(visible_files(ctx.work))}.")
+        ask = f"Stage '{sid}' for {ctx.subject}. Done when: {stage.get('done_when', 'your method is satisfied')}\n{ctx.holds()}"
         try:
             v, stats = await _agent_run(ctx, sid, n, instructions, ask, names, ctx.registry.model_for(ctx.flow, {}, stage.get("review")),  # the reviewer's own model, else the flow's
                                         lambda t, **d: ctx.emit(sid, t, n=n, agent=who, role="reviewer", **d), True)
@@ -319,8 +338,8 @@ async def run_stage(ctx: Ctx, stage: dict) -> tuple[str, str]:
 
 
 async def run_item(ctx: Ctx, start_at: str | None = None) -> tuple[str, str]:
-    """One item along the flow's graph, from `start_at` if given (a resume), else from the first stage.
-    Returns (ending, reason); the ending is one of ENDINGS."""
+    """One unit of work along the flow's graph, from `start_at` if given (a resume, or the join), else from the first stage.
+    An item's way ends where the items are joined: the first `once` stage. Returns (ending, reason); the ending is one of ENDINGS."""
     if start_at is None:
         ctx.emit(None, "item_started")
     else:
@@ -328,7 +347,7 @@ async def run_item(ctx: Ctx, start_at: str | None = None) -> tuple[str, str]:
 
     async def walk() -> tuple[str, str]:
         at = start_at or ctx.graph.start
-        while at != END:
+        while at != END and (ctx.joined or not ctx.graph.once(at)):
             if ctx.cancelled():  # between stages; inside one, a running script or CLI is stopped and an agent's try finishes
                 return "cancelled", f"the run was cancelled before stage {at}"
             outcome, reason = await run_stage(ctx, ctx.graph.stages[at])

@@ -53,7 +53,8 @@ class Home(unittest.TestCase):
         shutil.rmtree(self.home, ignore_errors=True)
 
     def items(self, run_id: str) -> dict:
-        return {r["item_id"]: r for r in self.store.items(run_id)}
+        """The items the source gave, by id. The unit that does the flow's `once` stages is asked for by its own id, "_all"."""
+        return {r["item_id"]: r for r in self.store.items(run_id, joined=False)}
 
     def finished_run(self, c) -> str:
         """The id of the newest run, once the API says it has finished."""

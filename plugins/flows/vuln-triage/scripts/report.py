@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""The flow's finish script: the report of one run, as pages in the run's output folder.
+"""The flow's `publish` stage: the report of one run, as pages in the run's output folder (AGENTFLOW_OUTPUT).
 
-The engine runs it once, when every ticket of the run has ended. The current directory is the run's output folder.
+The stage is `once`, so it is done once for the run, when every ticket has ended, however it ended.
 On stdin: {"run", "flow", "trial", "started", "items": [{"id", "ended_as", "reason", "folder", "item"}]}.
 It writes index.html, and one page per ticket from the report.md in the ticket's work folder.
 Text a model wrote is shown as text: everything is escaped, and no link or HTML of its is kept.
 """
 import html
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -77,7 +78,7 @@ def header_line(report: str, key: str) -> str:
 
 
 def main() -> None:
-    run = json.load(sys.stdin)
+    run, out = json.load(sys.stdin), Path(os.environ["AGENTFLOW_OUTPUT"])
     rows, counts = "", {}
     for it in run["items"]:
         ticket, state = it["id"], STATES.get(it["ended_as"], str(it["ended_as"]).replace("_", " "))
@@ -91,7 +92,7 @@ def main() -> None:
         if report:
             body += f'<div class="report">{markdown(report)}</div>'
         body += f'<h2>Evidence</h2><p>Work folder <code>{html.escape(it["folder"])}</code></p>'
-        Path(f"{ticket}.html").write_text(page(f"{ticket} · {run['flow']}", body))
+        (out / f"{ticket}.html").write_text(page(f"{ticket} · {run['flow']}", body))
         finding = header_line(report, "Finding") if done else it["reason"]
         rows += (f'<tr><td><a href="{html.escape(ticket)}.html">{html.escape(ticket)}</a></td><td><span class="tag {html.escape(str(it["ended_as"]))}">{state}</span></td>'
                  f'<td>{inline(finding)}</td><td>{inline(header_line(report, "Fix") if done else "")}</td></tr>')
@@ -99,7 +100,7 @@ def main() -> None:
     body = (f'<h1>{html.escape(run["flow"])}</h1><p class="sub">{"Trial run. " if run["trial"] else ""}Run <code>{html.escape(run["run"])}</code> · '
             f'started {html.escape(run["started"] or "")} · {len(run["items"])} tickets: {summary}</p>'
             f'<div class="wrap"><table><tr><th>Ticket</th><th>State</th><th>Finding</th><th>Suggested fix</th></tr>{rows}</table></div>')
-    Path("index.html").write_text(page(f"{run['flow']} · {run['run']}", body))
+    (out / "index.html").write_text(page(f"{run['flow']} · {run['run']}", body))
     print(f"wrote index.html and {len(run['items'])} ticket pages")
 
 

@@ -177,7 +177,7 @@
   <p>The engine runs inside one Docker image, built from the <code>Dockerfile</code> at the project root. Nothing of yours is in the image. <code>compose.yaml</code> attaches the settings, the plugins and the data folder when the container starts.</p>
 <pre class="solo"><span class="c">this machine                        one container · image agentflow · user agentflow, uid 1000</span>
 browser         ─ 127.0.0.1:8321 ─→ agentflow serve     <span class="c">pages · JSON API · scheduler · tool health · watchdog</span>
-agentflow.yaml  ─ read-only ──────→   └─ runner         <span class="c">fetch · queue · stage loop · finish</span>
+agentflow.yaml  ─ read-only ──────→   └─ runner         <span class="c">fetch · queue · stage loop · join</span>
 plugins/        ─ read-only ──────→       ├─ scripts    <span class="c">fetch · run · check: child processes behind guard.py</span>  ─→ network
 .env            ─ as environment ─→       └─ agents     <span class="c">in the engine's process, on Pydantic AI</span>               ─→ model provider
 data/           ←─ read-write ────→            └─ tools <span class="c">a script per call, or an MCP server per agent run</span>     ─→ network
@@ -314,7 +314,7 @@ fields: [service, package, fixed_in, severity, summary]</pre>
   <div class="scroll"><table class="wrap wide">
     <thead><tr><th>Who</th><th>Says</th><th>The engine</th></tr></thead><tbody>
     <tr><td class="name">Source</td><td><code>run</code>: how and where the items are got. <code>output</code>: the JSON file its script writes into the fetch's own folder, given in <code>AGENTFLOW_OUT</code>. <code>fields</code>: what every item has.</td><td>Runs the script. Reads the file: a JSON list of objects, each with a text <code>id</code> made of letters, digits, <code>.</code>, <code>_</code> or <code>-</code>, no id twice, every listed field present. Anything else is a failed fetch, and no flow gets an item.</td></tr>
-    <tr><td class="name">Flow</td><td><code>source</code>: the source it accepts. <code>where</code>: a field and the value, or list of values, an item must have, for example <code>where: {severity: [high, medium]}</code>. <code>schedule</code>: when. <code>finish</code>: a script of the flow that runs once when every item has ended and writes what the run puts out.</td><td>Refuses a <code>where</code> on a field the source does not list. Hands the flow only the items that match. Flows on the same source that come due in the same slot share one fetch.</td></tr>
+    <tr><td class="name">Flow</td><td><code>source</code>: the source it accepts. <code>where</code>: a field and the value, or list of values, an item must have, for example <code>where: {severity: [high, medium]}</code>. <code>schedule</code>: when. A stage with <code>once: true</code> is done once for the run, when every item has ended, instead of once per item.</td><td>Refuses a <code>where</code> on a field the source does not list. Hands the flow only the items that match. Flows on the same source that come due in the same slot share one fetch.</td></tr>
   </tbody></table></div>
   <p class="fine">A source has no schedule and starts nothing: it is fetched when a flow that accepts it starts. A tool script gets its <code>args</code> in order as separate values, runs in the item's folder, and what it prints is the tool's answer. Its <code>health</code> script exits with 0 when the tool works; an MCP server is healthy when it starts and lists its tools. The server checks every tool when it starts, every <code>health_every_seconds</code> (five minutes unless set) and on request, and keeps the last answer. Every agent also gets <code>list_files</code>, <code>read_file</code> and <code>write_file</code>; a reviewer gets no <code>write_file</code>. An agent sees earlier runs only when its <code>tools</code> list the plugins <code>history</code> and <code>history-file</code>, which wrap <code>agentflow history</code>. An agent run is capped at 20 model calls. A run copies the plugin files its flow uses into its own folder and executes from that copy.</p>
 </section>
@@ -330,6 +330,7 @@ fields: [service, package, fixed_in, severity, summary]</pre>
         <li><b>Fail.</b> A rejected stage goes to <code>on_fail</code>: to itself, which tries again with the reason, or to an earlier stage, which runs again with the reason while the item works its way forward again.</li>
         <li>An agent is told its own rejected tries, and the rejections of later stages that sent the item back since it last ran. A script is told nothing; it is run again.</li>
         <li>A stage has one way forward and one way back. There is no branching on content, no parallel stages and no flow inside a flow.</li>
+        <li><b>Per item, or once.</b> A stage is done for each item. With <code>once: true</code> it is done once for the run: the items are joined at the first such stage, which begins when every item has got there or ended. It is a stage like any other, done by a script or an agent, with the same validation, tries and edges.</li>
       </ul>
     </div>
     <div class="col">
@@ -340,6 +341,7 @@ fields: [service, package, fixed_in, severity, summary]</pre>
         <li>A loop on pass edges, and a stage nothing leads to.</li>
         <li><code>on_fail</code> on a stage with nothing that can fail, or naming a later stage.</li>
         <li><code>tries</code> below 1.</li>
+        <li>A per-item stage after a <code>once</code> stage, and a <code>once</code> stage whose <code>on_fail</code> names a per-item stage.</li>
       </ul>
     </div>
   </div>
@@ -352,6 +354,19 @@ fields: [service, package, fixed_in, severity, summary]</pre>
     <tr><td>The ceiling of tries is reached · a reviewer errors · a stage script exits with an error</td><td>ends as <span class="pill wait">failed</span></td></tr>
     <tr><td>A stage script exits with 78</td><td>ends as <span class="pill done">done</span>; the remaining stages are skipped</td></tr>
     <tr><td><code>minutes_per_item</code> is used up · the run has spent <code>cost_per_run_usd</code> · the run is cancelled</td><td>ends as <span class="pill wait">timed out</span> <span class="pill wait">stopped at cost cap</span> <span class="pill wait">cancelled</span></td></tr>
+  </tbody></table></div>
+  <h3>After the join</h3>
+  <p>Other orchestrators treat the step after a fan-out as an ordinary step that the workflow wires in: the state after a Step Functions <code>Map</code>, the node after LangGraph's <code>Send</code>, <code>.foreach().then()</code> in Mastra, the task downstream of <code>.expand()</code> in Airflow. None of them limits it to a script, and the engine owns no closing step. This engine does the same.</p>
+<pre class="solo">items, in parallel:   gather ─→ analyse ─→ fix ─→ report ─┐
+                                                          ├─ join ─→ publish (once) ─→ end
+                      gather ─→ analyse ✗ failed ─────────┘          <span class="c"># an item that failed is joined too</span></pre>
+  <div class="scroll"><table class="wrap mid">
+    <thead><tr><th>A <code>once</code> stage</th><th>How</th></tr></thead><tbody>
+    <tr><td class="name">Who walks it</td><td>One more unit of work, <code>_all</code>: a row among the run's items, with its own folder <code>items/_all/</code>, tries, verdicts, trace and ending. The code that takes an item along the graph takes it along too.</td></tr>
+    <tr><td class="name">What it is handed</td><td>The run and how each item ended, with the reason and the folder. A script gets it as JSON on its input. An agent gets it in its prompt and can read, not change, what each item's stages wrote, as <code>../&lt;item id&gt;/&lt;file&gt;</code>.</td></tr>
+    <tr><td class="name">Items that failed</td><td>Are joined like the rest and named with their ending. What to make of them is the stage's business; the engine has no rule for it.</td></tr>
+    <tr><td class="name">When it fails</td><td><code>_all</code> ends as failed, like an item, and can be retried by itself. A cancelled run does not do the stages.</td></tr>
+    <tr><td class="name">Limits</td><td>Every stage after the first <code>once</code> stage is <code>once</code>: the run does not fan out a second time.</td></tr>
   </tbody></table></div>
   <p class="fine">Nothing passes by default. Only a try that validation rejected counts against <code>tries</code>; a try cut short by a stopped process does not. The reviewer is a separate agent run with read-only file tools and no memory of the work.</p>
 </section>
@@ -366,14 +381,14 @@ fields: [service, package, fixed_in, severity, summary]</pre>
     <tr><td class="name">A trial</td><td><code>agentflow try &lt;flow&gt; [--item ID]</code></td><td>One item through the real stages, in a run folder of its own. Stage scripts and tools get <code>AGENTFLOW_TRIAL=1</code> so they can hold back what a trial should not do.</td></tr>
   </tbody></table></div>
   <ul>
-    <li><b>The order of a run.</b> Fetch the source into its own folder, check what it handed over, queue the items the flow accepts, work up to <code>at_once</code> of them in parallel, run the flow's <code>finish</code> script, end the run.</li>
+    <li><b>The order of a run.</b> Fetch the source into its own folder, check what it handed over, queue the items the flow accepts, work up to <code>at_once</code> of them in parallel, join them and do the flow's <code>once</code> stages if it has any, end the run.</li>
     <li><b>A run is just a run.</b> Every item the flow accepts is worked, in this run's own folder. The engine does not compare a run with earlier ones. A flow that should leave out what it has already handled does that itself: its source's script hands over only what is new, <code>where</code> narrows the items, or a first stage script exits 78 to end an item at once. Any of its scripts can ask what earlier runs did with <code>agentflow history [flow] [--item ID]</code>, which answers in JSON with how each item ended and where its files are.</li>
     <li><b>Refused at the start.</b> A flow that does not pass its checks, and a flow that uses a model whose key is not set.</li>
     <li><b>A try that goes wrong is told, not dropped.</b> A tool that fails or runs out of time answers the agent with its error, and the agent goes another way in the same try. A request the model did not answer is tried again by the model client. A try that still stops (the answer cut off at the output limit, out of <code>model_calls</code>, a CLI that exits with an error) counts as a rejected try: a fresh try gets the reason and decides whether to go on. A stage script that fails still fails the item.</li>
     <li><b>The agent decides, the engine does not.</b> An agent has no tool for giving up and nobody to ask. It ends a stage with <code>{"outcome": "done" | "failed", "reason"}</code>. Whether rejected work is done again is its decision too: it is told why in the conversation it already has. The engine retries nothing by itself except a request the model did not answer; <code>tries</code> is a ceiling, like a limit on turns. An item ends as done or failed.</li>
     <li><b>What an agent is told, in layers.</b> The base instructions (<code>agentflow/workers/prompts/agent.md</code>, or the flow's own file named by <code>instructions:</code> in <code>flow.yaml</code>, which replaces them), the agent's method, what the flow is for, the stage, then the task with the reasons of earlier tries.</li>
     <li><b>Context is kept in bounds.</b> Once a request of an agent reads more than <code>context_tokens</code>, the answers of its older tool calls are cleared; the calls stay, so it can ask again. Codex and Claude Code compact their own context.</li>
-    <li><b>The output is the flow's.</b> Every run has an <code>output/</code> folder. The flow's <code>finish</code> script runs once when every item has ended, in that folder, with the run and how each item ended as JSON on its input; stage scripts are told the folder too. The engine renders no report: it lists the folder on the run's page and serves its files. The one file it keeps there itself is <code>run.log</code>, a line for each thing the run did, written as the run goes. A <code>finish</code> script that fails does not fail the run, and a cancelled run skips it.</li>
+    <li><b>The output is the flow's.</b> Every run has an <code>output/</code> folder. Every script of a run is told the folder, and a flow that reports on the whole run does it in a <code>once</code> stage, as the example flow's <code>publish</code> does. The engine has no step of its own at the end of a run and renders no report: it lists the folder on the run's page and serves its files. The one file it keeps there itself is <code>run.log</code>, a line for each thing the run did, written as the run goes.</li>
   </ul>
 </section>
 
@@ -477,7 +492,7 @@ check script ─→ reviewer ─→ pass, or back to the agent      <span class=
 └── runs/
     └── &lt;date&gt;-&lt;run id&gt;/     <span class="c"># one folder per run or trial</span>
         ├── plugins/         <span class="c"># the plugin files as the run first saw them</span>
-        ├── items/
+        ├── items/           <span class="c"># one folder per item, and _all/ for the flow's once stages</span>
         │   └── &lt;item id&gt;/   <span class="c"># the item's work folder</span>
         │       ├── events.jsonl  <span class="c"># what happened to this item</span>
         │       ├── attempts/     <span class="c"># &lt;stage&gt;-&lt;n&gt;.prompt.md: what each try was told</span>
@@ -511,7 +526,7 @@ check script ─→ reviewer ─→ pass, or back to the agent      <span class=
     <tr><td class="name">Sign of life</td><td>The process doing a run writes a time to the run's row every <code>heartbeat_seconds</code> (5 unless set). A run with no ending and no sign of life for <code>stale_after_seconds</code> (60) shows as interrupted.</td><td></td></tr>
     <tr><td class="name">Watchdog</td><td>Every <code>watch_every_seconds</code> (15 unless set) inside <code>agentflow serve</code>, and at the start of a resume or a cancel. It closes the open tries of a quiet run as interrupted and adds an event. It never resumes and never cleans up.</td><td></td></tr>
     <tr><td class="name">Resume</td><td>Takes over an interrupted run. A run that is alive or finished is refused. An item that had ended is left alone. An unfinished item is put back on the graph where its latest try left it, in its own folder, with the reasons of its rejected tries.</td><td><code>agentflow resume &lt;run&gt;</code> · <code>POST /api/runs/{run}/resume</code> · Resume on the run's page</td></tr>
-    <tr><td class="name">Retry</td><td>Opens a finished run again for its items that did not end as done, or the one named. Each goes on at the stage where it stopped, in its own folder, told what its earlier tries said; its count of tries starts again. Items that ended as done are left alone, and the flow's <code>finish</code> script runs again.</td><td><code>agentflow retry &lt;run&gt; [--item ID]</code> · <code>POST /api/runs/{run}/retry?item=…</code> · Retry failed on the run's page</td></tr>
+    <tr><td class="name">Retry</td><td>Opens a finished run again for its items that did not end as done, or the one named. Each goes on at the stage where it stopped, in its own folder, told what its earlier tries said; its count of tries starts again. Items that ended as done are left alone, and the flow's <code>once</code> stages are done again. Those stages count as one more item, <code>_all</code>, so they can be retried by themselves.</td><td><code>agentflow retry &lt;run&gt; [--item ID]</code> · <code>POST /api/runs/{run}/retry?item=…</code> · Retry failed on the run's page</td></tr>
     <tr><td class="name">Cancel</td><td>In a live run, a running stage script or check script is stopped within half a second and its item ends as cancelled. An agent finishes its try, then its item stops. A run whose process is gone is closed on the spot. Folders are kept.</td><td><code>agentflow cancel &lt;run&gt;</code> · <code>POST /api/runs/{run}/cancel</code> · Cancel on the run's page</td></tr>
   </tbody></table></div>
 </section>
@@ -581,7 +596,7 @@ data/            <span class="c"># everything the engine writes</span></pre>
 │   ├── graph.py              <span class="c"># a flow compiled to a graph</span>
 │   └── health.py             <span class="c"># whether each tool works right now</span>
 ├── engine/                   <span class="c"># the run pipeline</span>
-│   ├── runner.py             <span class="c"># fetch, route, work, finish</span>
+│   ├── runner.py             <span class="c"># fetch, route, work, join</span>
 │   ├── stages.py             <span class="c"># one item on the graph: do, validate, decide</span>
 │   ├── recovery.py           <span class="c"># watchdog, resume, retry, cancel</span>
 │   └── schedule.py           <span class="c"># which flows are due, on and off</span>
@@ -604,7 +619,7 @@ data/            <span class="c"># everything the engine writes</span></pre>
   <h2>Checked and not checked</h2>
   <div class="scroll"><table class="wrap mid">
     <thead><tr><th>What</th><th>State</th><th>Detail</th></tr></thead><tbody>
-    <tr><td class="name">Tests</td><td><span class="pill done">checked</span></td><td>49 tests pass on the stand-in: 20 on the engine, 9 on a stage done by a CLI, 5 on recovery, 15 on the pages.</td></tr>
+    <tr><td class="name">Tests</td><td><span class="pill done">checked</span></td><td>53 tests pass on the stand-in: 23 on the engine, 9 on a stage done by a CLI, 6 on recovery, 15 on the pages.</td></tr>
     <tr><td class="name">A stage on Codex</td><td><span class="pill done">checked</span></td><td>One trial item with gpt-6-luna and the key, on this machine and in the container: the item ended done. On this machine the analyse stage took 22.5 seconds and 95,901 tokens, priced at $0.0040; the engine's own harness took 7.4 seconds and 5,927 tokens, $0.0008.</td></tr>
     <tr><td class="name">A stage on Claude Code</td><td><span class="pill hold">not checked</span></td><td>Its own sign-in on this machine had expired, so the real run ended with that error, which the item shows as its reason. Its output is read by the tests from a recorded shape only.</td></tr>
     <tr><td class="name">In the container</td><td><span class="pill done">checked</span></td><td>On a Mac with Docker Desktop: the image builds, the server starts and checks the tools, and a flow runs from its page.</td></tr>

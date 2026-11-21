@@ -1,6 +1,5 @@
 source: security-tickets
 schedule: weekdays 07:00
-finish: scripts/report.py   # once, when every ticket has ended: writes the run's report into its output folder
 stand_in: scripts/stand_in.py   # answers in the model's place when the flow is run with --stand-in
 
 stages:
@@ -17,3 +16,7 @@ stages:
 
   - id: report
     done_when: report.md covers origin, chain, fix and evidence, and agrees with the earlier stages.
+
+  - id: publish
+    once: true   # not per ticket: once for the run, when every ticket has ended
+    run: scripts/report.py

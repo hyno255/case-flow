@@ -110,24 +110,44 @@ so an item that failed is worked again by the next run. A flow that should
 leave out what it has already handled does that itself: its source's script hands over only what is new, `where` narrows
 the items, or a first stage script exits with 78 to end an item at once.
 
-### What a run puts out
+### Stages done once for the run
 
-Every run has an `output/` folder, and the flow fills it. The engine lists and serves it, and keeps one file of its own there, `run.log`:
+A stage is done for each item. With `once: true` it is done once for the run instead, when every item has got to it or
+ended. The items are joined there, and from then on the run is one unit of work:
 
 ```yaml
 # a flow.yaml
-finish: scripts/report.py   # optional: runs once, when every item of the run has ended
+stages:
+  - id: report                 # per item, like every stage above it
+    done_when: report.md covers origin, chain, fix and evidence.
+  - id: summary                # once: an agent reads what every item's stages wrote
+    once: true
+    done_when: summary.md names every ticket and how it ended.
+  - id: publish                # once: a script writes the run's pages
+    once: true
+    run: scripts/report.py
 ```
 
-- The `finish` script works in the run's output folder. On its input it gets the run and how each item ended, as JSON:
-  `{"run", "flow", "trial", "started", "items": [{"id", "ended_as", "reason", "folder", "item"}]}`.
-- Every script of a run is told `AGENTFLOW_OUTPUT`, the same folder, so a stage script can write there too.
+- A `once` stage is a stage like any other: a script, an agent or the default agent does it, and it can have `check`,
+  `done_when`, `review`, `tries`, `next` and `on_fail`. The engine has no step of its own at the end of a run; what
+  follows the items, and in which order, is the flow's.
+- It is handed the run and how each item ended, whatever the ending; what to make of an item that failed is the stage's business.
+  A script gets it on its input, as JSON: `{"run", "flow", "trial", "started", "items": [{"id", "ended_as", "reason", "folder", "item"}]}`.
+  An agent gets it in its prompt, and can read (not change) what each item's stages wrote, as `../<item id>/<file>`.
+- The stages work in a folder of their own beside the items', `items/_all/`, and show on the run's page as one more row,
+  `_all`, with its files, its trace, and its own ending. If one of them fails, `agentflow retry <run> --item _all` does them again.
+- Every stage after the first `once` stage is `once` too, and its `on_fail` can name only another such stage.
+- A cancelled run does not do them.
+
+### What a run puts out
+
+Every run has an `output/` folder, and the flow fills it. The engine lists and serves it, and keeps one file of its own there, `run.log`.
+
+- Every script of a run is told `AGENTFLOW_OUTPUT`, that folder. The example flow's last stage, `publish`, is a `once`
+  stage whose script writes an index and one page per ticket there.
 - The run's page lists the folder under Output, and serves each file at `/runs/<run>/output/<file>`. The pages are the flow's, not the engine's: they are served sandboxed.
-- A `finish` script that fails does not fail the run; the run's page says why. A cancelled run skips it.
 - `run.log` has one line for each thing the run did: a stage started, a tool called, a try rejected and why, an item ended.
   It is written as the run goes, so opening it again shows how far the run is. The pages of a run that is still going are fetched again every few seconds; nothing is streamed.
-
-The example flow's `scripts/report.py` writes an index and one page per ticket this way.
 
 ### Looking at earlier runs
 
@@ -240,7 +260,7 @@ agentflow retry <run>
 
 This works the items of a finished run that did not end as done once more; `--item ID` names one, and the run's page has
 the same as a button. Each item goes on at the stage where it stopped, in its own folder, and is told what its earlier
-tries said. Its count of tries starts again. Items that ended as done are left alone, and the flow's `finish` script runs again.
+tries said. Its count of tries starts again. Items that ended as done are left alone, and the flow's `once` stages are done again.
 
 ### What an agent is told
 

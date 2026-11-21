@@ -9,6 +9,7 @@
             attempts/             what each try was told, and what a CLI that did the try printed
             verdicts/             what each validation said
             ...                   the files the stages wrote
+        items/_all/               the same, for the stages a flow has done once for the run, when every item has ended
         output/                   what the flow puts out for this run: its scripts write here, the engine only serves it
 
 The store keeps folders relative to the data folder, so the data folder can be moved.
@@ -21,6 +22,7 @@ RUNS, FETCHES = "runs", "fetches"
 PLUGINS, ITEMS, OUTPUT = "plugins", "items", "output"                     # inside a run folder
 EVENTS, ATTEMPTS, VERDICTS = "events.jsonl", "attempts", "verdicts"            # inside an item's folder
 ENGINE_OWNED = (EVENTS, VERDICTS, ATTEMPTS)                                   # not writable by agents or scripts
+ALL = "_all"  # the run's items, joined: the unit that does a flow's `once` stages. No item can have this id: an item's id starts with a letter or a digit
 
 
 
@@ -46,9 +48,12 @@ def verdict_file(stage: str, n: int) -> str:
     return f"{VERDICTS}/{stage}-{n}.md"
 
 
-def confined(work: Path, rel: str, writing: bool = False) -> Path:
-    """A path inside a folder, or ValueError. No absolute paths, no '..', no symbolic links, no writing the engine's files."""
+def confined(work: Path, rel: str, writing: bool = False, beside: bool = False) -> Path:
+    """A path inside a folder, or ValueError. No absolute paths, no '..', no symbolic links, no writing the engine's files.
+    With `beside`, a path that starts with '../' may be read, and only read, from the folders next to this one."""
     parts = Path(rel).parts
+    if beside and not writing and parts[:1] == ("..",):
+        return confined(work.parent, str(Path(*parts[1:])))
     if Path(rel).is_absolute() or ".." in parts or not parts:
         raise ValueError("path must be relative and inside the work folder")
     cur = work
@@ -65,3 +70,8 @@ def visible_files(work: Path) -> list[str]:
     """The files of an item's folder that the stages wrote, without the engine's own."""
     return sorted(str(p.relative_to(work)) for p in work.rglob("*")
                   if p.is_file() and p.relative_to(work).parts[0] not in ENGINE_OWNED)
+
+
+def files_beside(work: Path) -> list[str]:
+    """The files the stages wrote in the folders next to this one, each as it is read from here: ../<folder>/<file>."""
+    return [f"../{d.name}/{f}" for d in sorted(work.parent.iterdir()) if d.is_dir() and not d.is_symlink() and d != work for f in visible_files(d)]

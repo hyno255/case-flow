@@ -55,7 +55,7 @@
     {% for f in v.files %}
       <tr><td class="name"><a href="{{ f.href }}" target="_blank" rel="noopener">{{ f.path }}</a></td><td class="r">{{ f.size | num }}</td></tr>
     {% else %}
-      <tr><td colspan="2" class="none">{% if v.finish %}Nothing yet. {{ v.finish }} runs when every item has ended.{% else %}Nothing. This flow has no finish script, and no stage script wrote here.{% endif %}</td></tr>
+      <tr><td colspan="2" class="none">Nothing. No script of this flow has written here.</td></tr>
     {% endfor %}
     </tbody>
   </table>

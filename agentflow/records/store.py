@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from agentflow.records.layout import DB, EVENTS
+from agentflow.records.layout import ALL, DB, EVENTS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schedules (flow TEXT PRIMARY KEY, spec TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, next_due TEXT);
@@ -75,8 +75,10 @@ class Store:
     def item(self, run_id: str, item_id: str):
         return self.one("SELECT * FROM items WHERE run_id = ? AND item_id = ?", run_id, item_id)
 
-    def items(self, run_id: str, open_only: bool = False) -> list[sqlite3.Row]:
-        return self.q(f"SELECT * FROM items WHERE run_id = ? {'AND ended_at IS NULL' if open_only else ''} ORDER BY item_id", run_id)
+    def items(self, run_id: str, open_only: bool = False, joined: bool = True) -> list[sqlite3.Row]:
+        """A run's items, and after them the unit that does the flow's `once` stages, if the run has got that far. joined=False leaves it out."""
+        return self.q(f"""SELECT * FROM items WHERE run_id = ? {'AND ended_at IS NULL' if open_only else ''} {'' if joined else 'AND item_id != ?'}
+                          ORDER BY item_id = '{ALL}', item_id""", run_id, *([] if joined else [ALL]))
 
     def events(self, run_id: str | None = None, item_id: str | None = None, after: int = 0, run_level: bool = False, limit: int = -1) -> list[dict]:
         """Events in order, each as the dictionary `emit` hands to listeners. With an item, `run_level` adds the run's own events."""
@@ -149,6 +151,11 @@ class Store:
             folder = self.path(self.item(run_id, item_id))
             self.emit(run_id, item_id, None, "item_ended", folder=folder if folder.is_dir() else None, ended_as=ended_as, reason=reason)
         return won
+
+    def reopen_item(self, run_id, item_id) -> None:
+        """An item that had ended is to be worked again. Tries from before this do not count against a stage's ceiling."""
+        self.db.execute("UPDATE items SET ended_at = NULL, ended_as = NULL, reason = NULL, claimed_at = NULL WHERE run_id = ? AND item_id = ?", (run_id, item_id))
+        self.emit(run_id, item_id, None, "item_retried")
 
     # ---- attempts and verdicts ----
     def start_attempt(self, run_id, item_id, stage, n, by) -> int:

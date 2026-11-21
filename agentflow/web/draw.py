@@ -1,7 +1,7 @@
 """A flow drawn from its compiled graph: boxes and arrows with every position worked out here, so the template only draws.
 
 One column, top to bottom: the source the flow accepts (with when it is fetched and which items are taken), each stage
-in the order written, then the run's output. A pass edge is a solid arrow,
+in the order written (one done once for the run says so), then the run's output. A pass edge is a solid arrow,
 a fail edge a dashed one: a loop at the right of the stage when it tries again itself, an arc up the left side when
 `on_fail` names an earlier stage. A pass edge that skips stages arcs down the left side.
 """
@@ -50,8 +50,8 @@ def graph(flow: dict, limits: dict, source: dict | None = None, stats: dict | No
          f"/sources/{src}" if src else "")  # ":" keeps it apart from stage ids
     for i, (sid, s) in enumerate(g.stages.items(), 1):
         checks = " + ".join(filter(None, ["check" if "check" in s else "", "review" if "review" in s or "done_when" in s else ""]))
-        node(sid, f"{i} · {'agent' if 'agent' in s else stage_by(s)}", sid, [s.get("run") or s.get("agent"), checks], f"{base}#stage-{sid}" if base is not None else "")
-    node(":end", "end", "output", [flow.get("finish")])
+        node(sid, f"{i} · {'agent' if 'agent' in s else stage_by(s)}{' · once' if s.get('once') else ''}", sid, [s.get("run") or s.get("agent"), checks], f"{base}#stage-{sid}" if base is not None else "")
+    node(":end", "end", "output", [])
     at = {n["id"]: n for n in nodes}
     at[END] = at[":end"]
     mid = left + W / 2

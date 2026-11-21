@@ -72,6 +72,14 @@ class Pure(unittest.TestCase):
             changed = [change if s["id"] == change["id"] else s for s in stages] + ([change] if change == {"id": "a"} else [])
             self.assertTrue(any(wanted in e for e in compile_flow({"stages": changed}, DEFAULTS["limits"])[1]), (wanted, compile_flow({"stages": changed}, DEFAULTS["limits"])[1]))
         self.assertEqual(compile_flow({"stages": []}, DEFAULTS["limits"])[1], ["the flow has no stages"])
+        # a stage is done per item, or once for the run: the items are joined at the first `once` stage, and it is a stage like any other
+        joined, errs = compile_flow({"stages": stages + [{"id": "d", "once": True, "done_when": "ok"}, {"id": "e", "once": True, "check": "z", "on_fail": "d"}]}, DEFAULTS["limits"])
+        self.assertEqual((errs, graph.join, joined.join, joined.once("c"), joined.after("c"), joined.after("e", "fail")), ([], None, "d", False, "d", "d"))
+        self.assertEqual((joined.position(None, start=joined.join), joined.position({"stage": "d", "outcome": "passed"}, start=joined.join)), ("d", "e"))
+        for more, wanted in (([{"id": "d", "once": True, "run": "x"}, {"id": "e", "run": "x"}], "stage e: it comes after 'd', which is done once for the run"),
+                             ([{"id": "d", "once": True, "check": "z", "on_fail": "b"}], "can go back only to another such stage"),
+                             ([{"id": "d", "once": "yes", "run": "x"}], "'once' is true or false")):
+            self.assertTrue(any(wanted in e for e in compile_flow({"stages": stages + more}, DEFAULTS["limits"])[1]), wanted)
 
     def test_schedule(self):
         self.assertEqual(parse_schedule("weekdays 07:00"), ("weekdays", 7, 0))
@@ -168,19 +176,21 @@ class EndToEnd(Home):
         self.assertGreater(usage["tokens"], 0)
         self.assertEqual((usage["cost_known"], usage["cost_usd"]), (True, 0))
 
-        # what a run puts out is the flow's own: its finish script ran once, in the run's output folder, and wrote the report there
+        # what a run puts out is the flow's own: its last stage is done once for the run, by a script that writes the report
         run = self.store.one("SELECT * FROM runs WHERE id = ?", run_id)
         out = self.store.path(run) / "output"
         self.assertEqual(sorted(p.name for p in out.iterdir()), ["SEC-1042.html", "SEC-1043.html", "SEC-1044.html", "SEC-1045.html", "index.html", "run.log"])
         self.assertIn("4 tickets: 2 triaged, 2 failed", (out / "index.html").read_text())
         self.assertIn("Raise acme-http", (out / "SEC-1042.html").read_text())
         ended = [e for e in self.store.events(run_id) if e["item"] is None]
-        self.assertEqual([e["type"] for e in ended], ["run_started", "finish_ended", "run_ended"])
-        self.assertEqual((ended[1]["script"], ended[1]["exit_code"]), ("scripts/report.py", 0))
+        self.assertEqual([e["type"] for e in ended], ["run_started", "run_ended"])  # the engine has no step of its own at the end of a run
+        joined = self.store.item(run_id, "_all")  # the items joined: one more unit of work, with a folder beside theirs
+        self.assertEqual((joined["ended_as"], joined["folder"].endswith("items/_all")), ("done", True))
+        self.assertEqual([(a["stage"], a["n"], a["outcome"]) for a in self.store.q("SELECT * FROM attempts WHERE run_id = ? AND item_id = '_all'", run_id)], [("publish", 1, "passed")])
         self.assertEqual((run["source"], self.store.one("SELECT COUNT(*) n FROM fetches WHERE id = ? AND outcome = 'ok'", run["fetch_id"])["n"]), ("security-tickets", 1))
         # everything the run wrote is in its own folder; the data folder holds only the database, the fetches and the runs
         self.assertEqual(sorted(p.name for p in self.store.path(run).iterdir()), ["items", "output", "plugins"])
-        self.assertEqual(sorted(p.name for p in (self.store.path(run) / "items").iterdir()), ["SEC-1042", "SEC-1043", "SEC-1044", "SEC-1045"])
+        self.assertEqual(sorted(p.name for p in (self.store.path(run) / "items").iterdir()), ["SEC-1042", "SEC-1043", "SEC-1044", "SEC-1045", "_all"])
         self.assertEqual(sorted(p.name for p in self.settings.data.iterdir()), ["db", "fetches", "runs"])
         self.assertEqual(sorted(p.name for p in self.home.iterdir()), ["agentflow.yaml", "data", "plugins"])
         self.assertFalse(Path(run["folder"]).is_absolute())  # stored relative, so the data folder can be moved
@@ -368,6 +378,63 @@ class EndToEnd(Home):
         item = self.items(run_id)["SEC-1042"]
         self.assertEqual(item["ended_as"], "failed")
         self.assertIn("tracker is down", item["reason"])
+
+    def test_a_stage_after_the_join_is_a_stage_like_any_other(self):
+        from agentflow.engine.recovery import retry_run
+        from agentflow.records.status import run_status
+        flow_dir = self.settings.plugins / "flows/vuln-triage"
+        flow = flow_dir / "flow.yaml"
+        # between the per-item stages and the script that publishes: an agent stage, with a check script and a reviewer, done once for the run
+        flow.write_text(flow.read_text().replace("  - id: publish\n", "  - id: summary\n    once: true\n    check: scripts/go.sh\n    tries: 1\n"
+                                                                       "    done_when: summary.md names every ticket.\n\n  - id: publish\n"))
+        (flow_dir / "stages/summary.md").write_text("Write summary.md: one line per ticket, with how it ended.")
+        (flow_dir / "scripts/go.sh").write_text('#!/bin/sh\n[ -f go ] || { echo "there is no go file"; exit 1; }\n')
+        (flow_dir / "scripts/go.sh").chmod(0o755)
+        stand_in = flow_dir / "scripts/stand_in.py"  # the model's part: read one ticket's report, try to change it, write the summary
+        stand_in.write_text(stand_in.read_text().replace("def main() -> None:", '''def summary(prompt: str, results: list) -> dict:
+    seen = [r["tool"] for r in results]
+    if "list_files" not in seen:
+        return call("list_files")
+    if "read_file" not in seen:
+        return {"calls": [{"tool": "read_file", "args": {"path": "../SEC-1042/report.md"}},
+                          {"tool": "write_file", "args": {"path": "../SEC-1042/report.md", "content": "changed"}}]}
+    if seen.count("write_file") < 2:
+        ended = [line for line in prompt.splitlines() if line.startswith("- SEC-")]
+        return call("write_file", path="summary.md", content="\\n".join(ended + of(results, "list_files") + [of(results, "read_file")[0].splitlines()[0], of(results, "write_file")[0]]))
+    return {"text": "Done."}
+
+
+def main() -> None:''').replace('"report": report}', '"report": report, "summary": summary}').replace('{"analyse": "origin.md", "fix": "fix.md"}', '{"analyse": "origin.md", "fix": "fix.md", "summary": "summary.md"}')
+                           .replace('    else:\n        passed = "Finding: "', '    elif stage == "summary":\n        passed = "SEC-1045" in text\n    else:\n        passed = "Finding: "'))
+        self.assertEqual(installed(self.settings).check_flow("vuln-triage"), [])
+
+        run_id = asyncio.run(start_flow(self.settings, self.store, "vuln-triage"))
+        before, joined = self.items(run_id), self.store.item(run_id, "_all")
+        work = self.store.path(joined)
+        # the agent was handed how every item ended, read what an item's stages wrote, and could not change it
+        told = (work / "attempts/summary-1.prompt.md").read_text()
+        self.assertIn(f"Do the stage 'summary' for all items of run {run_id}. Every item of the run has ended:\n- SEC-1042: done\n", told)
+        self.assertIn("- SEC-1045: failed (analyse: origin-analyst could not do it:", told)
+        text = (work / "summary.md").read_text()
+        for part in ("- SEC-1044: failed (fix: default agent could not do it:", "../SEC-1043/report.md", "# Origin of libexample-xml in checkout-api", "error: path must be relative and inside the work folder"):
+            self.assertIn(part, text)
+        self.assertNotIn("../SEC-1042/attempts", text)  # the engine's own files are not listed
+        self.assertNotEqual((self.store.path(before["SEC-1042"]) / "report.md").read_text(), "changed")
+        # its check script did not accept the work and it had one try: the unit ended as failed, like an item, and the stage after it was not done
+        self.assertEqual((joined["ended_as"], joined["reason"]), ("failed", "summary: not accepted after 1 of 1 tries. Last reason from check scripts/go.sh: there is no go file"))
+        run = self.store.run(run_id)
+        self.assertEqual((run_status(run, self.stale)[0], (self.store.path(run) / "output/index.html").is_file()), ("finished", False))
+
+        # it can be retried by itself: the items are left alone, the stage is told why, its reviewer judges it, and the flow goes on to the next stage
+        (work / "go").write_text("")
+        asyncio.run(retry_run(self.settings, self.store, run_id, "_all"))
+        self.assertEqual(self.store.item(run_id, "_all")["ended_as"], "done")
+        tries = {s: [(a["n"], a["outcome"]) for a in self.store.q("SELECT n, outcome FROM attempts WHERE run_id = ? AND item_id = '_all' AND stage = ? ORDER BY n", run_id, s)] for s in ("summary", "publish")}
+        self.assertEqual(tries, {"summary": [(1, "rejected"), (2, "passed")], "publish": [(1, "passed")]})
+        self.assertIn("there is no go file", (work / "attempts/summary-2.prompt.md").read_text())
+        self.assertEqual([v["by"] for v in self.store.q("SELECT by FROM verdicts WHERE run_id = ? AND stage = 'summary' AND n = 2", run_id)], ["check scripts/go.sh", "checker"])
+        self.assertEqual({k: v["ended_at"] for k, v in self.items(run_id).items()}, {k: v["ended_at"] for k, v in before.items()})
+        self.assertIn("4 tickets: 2 triaged, 2 failed", (self.store.path(run) / "output/index.html").read_text())
 
     def test_a_rejected_stage_can_send_the_item_back_to_an_earlier_one(self):
         flow_dir = self.settings.plugins / "flows/vuln-triage"

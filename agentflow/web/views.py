@@ -58,7 +58,7 @@ def started_by(store, run) -> str:
 
 def run_row(settings, store, run) -> dict:
     status, pill = run_status(run, stale(settings))
-    rows, u = store.items(run["id"]), store.usage(run["id"])
+    rows, u = store.items(run["id"], joined=False), store.usage(run["id"])  # the items the source gave; the flow's `once` stages are not one of them
     return {"id": run["id"], "flow": run["flow"], "trial": bool(run["trial"]), "started": show.when(run["started"]), "by": started_by(store, run), "status": status, "pill": pill,
             "counts": item_counts(settings, run, rows), "n_items": len(rows), "tokens": u["tokens"], "cost": show.cost(u),
             "time": show.duration(show.seconds_between(run["started"], run["ended"])),
@@ -135,13 +135,6 @@ def output_files(store, run) -> list[dict]:
             for p in sorted(out.rglob("*")) if p.is_file() and not p.is_symlink()] if out.is_dir() else []
 
 
-def finish_error(store, run_id: str) -> str:
-    """Why the flow's finish script failed in this run, if it did."""
-    last = store.one("SELECT data FROM events WHERE run_id = ? AND type = 'finish_ended' ORDER BY seq DESC LIMIT 1", run_id)
-    d = json.loads(last["data"]) if last else {}
-    return f"The finish script {d['script']} exited with code {d['exit_code']}: {d.get('output') or 'it printed nothing'}" if d.get("exit_code") else ""
-
-
 def run_view(settings, store, run_id: str, tab: str = "items", span: str = "", error: str = "") -> dict | None:
     """One tab of a run page. `error` is why a resume of this run could not go on."""
     run = store.run(run_id)
@@ -155,13 +148,12 @@ def run_view(settings, store, run_id: str, tab: str = "items", span: str = "", e
               "source": run["source"], "cap": f"${settings.limits_for(flow)['cost_per_run_usd']:.2f}",
               "snapshot": run["snapshot"], "folder": str(store.path(run)),
               "flow_exists": (settings.plugins / "flows" / run["flow"] / "flow.yaml").is_file(),
-              "error": error or (finish_error(store, run_id) if run["ended"] else "")})
+              "error": error})
     if tab == "items":
         v["items"] = [item_row(settings, store, run, it) for it in store.items(run_id)]
     elif tab == "output":
         files = output_files(store, run)
         v["output_folder"], v["files"], v["more"] = str(store.path(run) / OUTPUT), files[:settings.internal["rows"]], max(0, len(files) - settings.internal["rows"])
-        v["finish"] = flow.get("finish") or ""
     elif tab == "trace":
         tr = tracing.build(store, run, settings.internal, live=status in WORKING, calls=False)
         for s in tr["root"]["children"]:

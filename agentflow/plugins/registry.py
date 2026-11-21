@@ -28,9 +28,9 @@ from agentflow.settings import check_numbers
 SOURCE_KEYS = {"description", "run", "output", "fields"}
 TOOL_KEYS = {"description", "run", "args", "health", "mcp"}
 AGENT_KEYS = {"description", "tools", "model"}
-FLOW_KEYS = {"source", "where", "schedule", "stages", "finish", "stand_in", "instructions", "model", "limits"}
+FLOW_KEYS = {"source", "where", "schedule", "stages", "stand_in", "instructions", "model", "limits"}
 OUTPUT_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.json")  # a source's output: one JSON file in the fetch's folder
-STAGE_KEYS = {"id", "run", "agent", "model", "check", "done_when", "review", "tries", "next", "on_fail"}
+STAGE_KEYS = {"id", "once", "run", "agent", "model", "check", "done_when", "review", "tries", "next", "on_fail"}
 STAGES = "stages"  # the folder of a flow that holds one file per stage
 
 
@@ -208,7 +208,7 @@ class Registry:
             except ValueError as e:
                 errs.append(str(e))
         errs += check_numbers("limits", f.get("limits") or {})
-        for key, what in (("finish", "script"), ("stand_in", "script"), ("instructions", "file")):
+        for key, what in (("stand_in", "script"), ("instructions", "file")):
             if key in f and not (d / str(f[key])).is_file():
                 errs.append(f"{key} {what} {f[key]} not found")
         if not (d / "FLOW.md").is_file():

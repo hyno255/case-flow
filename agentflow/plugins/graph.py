@@ -12,6 +12,11 @@ LangGraph compiles a StateGraph before it will run one:
 Pass edges must lead to the end without a cycle. Loops exist only on fail edges, and every fail edge is
 bounded by the `tries` of the stage it leaves, so a compiled graph cannot run for ever.
 
+A stage is done for each item, or, with `once: true`, once for the run: the items are joined at the first such
+stage, which begins when every item has got there or ended. From the join on the run is one unit of work, so
+every stage after it is `once` too. A `once` stage is a stage like any other: the engine has no step of its own
+at the end of a run.
+
 The same graph is what the engine walks, what a resumed item is placed on, and what the pages draw.
 """
 from dataclasses import dataclass
@@ -41,6 +46,10 @@ class Graph:
     stages: dict[str, dict]  # by id, in the order written
     edges: list[Edge]
     default_tries: int       # for a stage that names no `tries`: the flow's limit
+    join: str | None = None  # the first `once` stage, where the items are joined; None when every stage is done per item
+
+    def once(self, stage: str) -> bool:
+        return bool(self.stages[stage].get("once"))
 
     def tries(self, stage: str) -> int:
         return self.stages[stage].get("tries", self.default_tries)
@@ -61,11 +70,12 @@ class Graph:
         """The other stages whose fail edge leads back to this one."""
         return {e.src for e in self.edges if e.on == "fail" and e.dst == stage and e.src != stage}
 
-    def position(self, last: dict | None, rejected: int = 0) -> str:
+    def position(self, last: dict | None, rejected: int = 0, start: str | None = None) -> str:
         """Where an item stands, from its latest try (`stage`, `outcome`) and how often that stage was rejected.
-        This is how a resumed item is put back on the graph: from stored facts, not a saved pointer."""
+        This is how a resumed item is put back on the graph: from stored facts, not a saved pointer.
+        `start` is where it begins when it has no try yet: the first stage, or the join for the joined items."""
         if last is None or last["stage"] not in self.stages:
-            return self.start
+            return start or self.start
         stage = last["stage"]
         if last["outcome"] == "passed":
             return self.after(stage)
@@ -104,6 +114,8 @@ def compile_flow(flow: dict, limits: dict) -> tuple[Graph, list[str]]:
                 errs.append(f"stage {sid}: on_fail names '{back}', which is not a stage")
                 back = sid
             edges.append(Edge(sid, back, "fail"))
+        if not isinstance(s.get("once", False), bool):
+            errs.append(f"stage {sid}: 'once' is true or false")
         tries = s.get("tries", limits["tries"])
         if isinstance(tries, bool) or not isinstance(tries, int) or tries < 1:
             errs.append(f"stage {sid}: 'tries' must be a number, 1 or more")
@@ -119,7 +131,13 @@ def compile_flow(flow: dict, limits: dict) -> tuple[Graph, list[str]]:
     if at != END:
         errs.append(f"stage {seen[-1]}: next goes back to '{at}'. A loop must use on_fail, which is bounded by tries")
     errs += [f"stage {sid}: nothing leads to it" for sid in order if sid not in seen]
+    graph.join = next((sid for sid in seen if graph.once(sid)), None)
+    if graph.join:  # after the join there are no single items left to do a stage for
+        errs += [f"stage {sid}: it comes after '{graph.join}', which is done once for the run, so it needs `once: true` too"
+                 for sid in seen[seen.index(graph.join):] if not graph.once(sid)]
     for e in edges:  # a fail edge goes back along the way the item came, so the item passes the failed stage again
         if e.on == "fail" and e.src in seen and e.dst in seen and seen.index(e.dst) > seen.index(e.src):
             errs.append(f"stage {e.src}: on_fail names '{e.dst}', which comes later. It must be this stage or an earlier one")
+        elif e.on == "fail" and graph.once(e.src) and not graph.once(e.dst):
+            errs.append(f"stage {e.src}: on_fail names '{e.dst}', which is done per item. A stage done once for the run can go back only to another such stage")
     return graph, errs

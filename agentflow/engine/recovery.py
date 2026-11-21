@@ -1,5 +1,5 @@
 """What happens to a run after it started: the watchdog records that its process is gone, and a person can
-resume it, cancel it, or have the items that did not end as done retried. All stay inside that run: no run reads or continues another run's work.
+resume it, cancel it, or have the items that did not end as done retried (the flow's `once` stages count as one more item here). All stay inside that run: no run reads or continues another run's work.
 
 Nothing here resumes or cleans up by itself. The watchdog only records; a person (or a command) decides.
 """
@@ -67,8 +67,7 @@ def claim_retry(store, run_id: str, item_id: str | None = None) -> list[str]:
     if not won:
         raise ValueError(f"run {run_id} is already being retried")
     for i in ids:
-        store.db.execute("UPDATE items SET ended_at = NULL, ended_as = NULL, reason = NULL, claimed_at = NULL WHERE run_id = ? AND item_id = ?", (run_id, i))
-        store.emit(run_id, i, None, "item_retried")  # tries from before this do not count against a stage's ceiling
+        store.reopen_item(run_id, i)
     return ids
 
 
@@ -81,14 +80,15 @@ async def retry_run(settings, store, run_id: str, item_id: str | None = None, *,
 
 
 async def _go_on(settings, store, run_id: str, event: str) -> str:
-    """Put every open item of a run back on the flow's graph where its latest try left it, and work them."""
+    """Put every open item of a run back on the flow's graph where its latest try left it, and work them.
+    The flow's `once` stages follow, as in any run: from the join when an item was worked, else where they stopped."""
     run = store.run(run_id)
     snap = run_plugins(settings, store, run)
     for spec in snap.models_used(run["flow"]):
         check_ready(settings, spec)  # stop before any work if a model this run uses is not usable
     graph = snap.graph(run["flow"])
     todo = []
-    for it in store.items(run_id, open_only=True):
+    for it in store.items(run_id, open_only=True, joined=False):
         start = graph.position(*store.last_try(run_id, it["item_id"]))
         todo.append((json.loads(it["payload"]), store.path(it), start if start != graph.start else None))
     store.db.execute("UPDATE items SET claimed_at = NULL WHERE run_id = ? AND ended_at IS NULL", (run_id,))

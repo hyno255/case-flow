@@ -18,7 +18,7 @@ ITEM_STATE = {name: bar for name, (_, _, bar) in ENDINGS.items() if bar}
 FIXED = ("seq", "ts", "run", "item", "stage", "type")  # the fields every event has; the rest is what the event carries
 USE = ("tokens_in", "tokens_out", "cost", "model_calls", "tool_calls", "cli_runs")  # added up from the calls into every span above them
 PARTS = ("agent", "script", "check", "review")
-RUN_MARKS = {"finish_ended": "finish script", "run_interrupted": "interrupted", "run_resumed": "resumed", "run_retried": "retried", "cancel_requested": "cancel asked for"}
+RUN_MARKS = {"run_interrupted": "interrupted", "run_resumed": "resumed", "run_retried": "retried", "cancel_requested": "cancel asked for"}
 
 
 def epoch(iso: str | None) -> float | None:

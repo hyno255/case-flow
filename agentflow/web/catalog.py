@@ -195,7 +195,7 @@ def flow_design(settings, store, live, name: str, f: dict) -> dict:
             continue  # shown with its switch, above the keys
         elif k == "model":
             config.append(model_row(k, val))
-        elif k in ("finish", "stand_in"):
+        elif k == "stand_in":
             config.append(row(k, val, file_link("flows", name, folder, val)))
         elif k not in (STAGES, "limits") or not isinstance(val, (dict, list)):
             config.append(row(k, val))

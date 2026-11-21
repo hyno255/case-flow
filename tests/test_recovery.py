@@ -85,7 +85,7 @@ class Recovery(Home):
         events = [e["type"] for e in self.store.q("SELECT type FROM events WHERE run_id = ? ORDER BY seq", run_id)]
         self.assertEqual(events.count("run_interrupted"), 1)
         self.assertEqual(events.count("attempt_interrupted"), 3)
-        self.assertNotIn("finish_ended", events)  # the flow's finish script waits until every item has ended
+        self.assertIsNone(self.store.item(run_id, "_all"))  # the flow's `once` stage waits until every item has ended
         before = self.items(run_id)
         self.assertEqual(before["SEC-1045"]["ended_as"], "failed")  # it had ended before the kill
         self.assertIsNone(before["SEC-1042"]["ended_at"])
@@ -105,8 +105,8 @@ class Recovery(Home):
         lines = [json.loads(l) for l in (work / "events.jsonl").read_text().splitlines()]
         self.assertIn({"type": "item_started", "from_stage": "analyse"}, [{k: l[k] for k in ("type", "from_stage") if k in l} for l in lines])
 
-        # the flow's finish script runs once, after the resume, with the finished result
-        self.assertEqual(self.store.one("SELECT COUNT(*) n FROM events WHERE run_id = ? AND type = 'finish_ended'", run_id)["n"], 1)
+        # the flow's `once` stage is done once, after the resume, with every item's ending
+        self.assertEqual(self.tries(run_id, "_all", "publish"), [(1, "passed")])
         run = self.store.one("SELECT * FROM runs WHERE id = ?", run_id)
         self.assertEqual(run_status(run, self.stale)[0], "finished")
         self.assertIn("2 triaged, 2 failed", (self.store.path(run) / "output/index.html").read_text())
@@ -140,7 +140,8 @@ class Recovery(Home):
         self.assertEqual(self.tries(run_id, "SEC-1045", "analyse"), [(1, "failed"), (2, "failed")])  # nothing changed for it: its agent says so again
         run = self.store.one("SELECT * FROM runs WHERE id = ?", run_id)
         self.assertEqual(run_status(run, self.stale)[0], "finished")
-        self.assertIn("3 triaged, 1 failed", (self.store.path(run) / "output/index.html").read_text())  # the flow's finish script ran again
+        self.assertIn("3 triaged, 1 failed", (self.store.path(run) / "output/index.html").read_text())
+        self.assertEqual(self.tries(run_id, "_all", "publish"), [(1, "passed"), (2, "passed")])  # items were worked again, so the stage after the join was done again
         log = (self.store.path(run) / "output/run.log").read_text()
         for text in ("run       retried: SEC-1044, SEC-1045", "SEC-1044  continues at fix"):
             self.assertIn(text, log)

@@ -23,7 +23,7 @@ import time
 
 from agentflow.records import log
 from agentflow.records.history import earlier, earlier_file
-from agentflow.records.layout import OUTPUT
+from agentflow.records.layout import ALL, OUTPUT
 from agentflow.plugins.registry import installed
 from agentflow.settings import Settings
 from agentflow.records.status import cost_text, item_status, run_status
@@ -64,7 +64,7 @@ def print_run(settings, store: Store, run_id: str, item_id: str | None = None) -
 
 def print_runs(settings, store: Store) -> int:
     for run in store.q("SELECT * FROM runs ORDER BY started DESC, rowid DESC LIMIT ?", settings.internal["rows"]):
-        ends = store.q("SELECT COALESCE(ended_as,'not finished') e, COUNT(*) n FROM items WHERE run_id = ? GROUP BY e", run["id"])
+        ends = store.q("SELECT COALESCE(ended_as,'not finished') e, COUNT(*) n FROM items WHERE run_id = ? AND item_id != ? GROUP BY e", run["id"], ALL)
         print(f"{run['id']}  {run['flow']:<16} {run['started']}  {'trial · ' if run['trial'] else ''}{run_status(run, settings.internal['stale_after_seconds'])[0]} · "
               f"{', '.join(f'{x['n']} {x['e']}' for x in ends)} · {money(store.usage(run['id']))}")
     return 0

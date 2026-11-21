@@ -96,7 +96,8 @@ class Runs(Site):
             run_id = self.run_once(c)
             run = c.get(f"/api/runs/{run_id}").json()
             self.assertEqual({i["id"]: (i["status"], i["stage"]) for i in run["items"]},
-                             {"SEC-1042": ("done", "report"), "SEC-1043": ("done", "report"), "SEC-1044": ("failed", "fix"), "SEC-1045": ("failed", "analyse")})
+                             {"SEC-1042": ("done", "report"), "SEC-1043": ("done", "report"), "SEC-1044": ("failed", "fix"), "SEC-1045": ("failed", "analyse"),
+                              "_all": ("done", "publish")})  # the last row: the stage done once for the run, when every item had ended
             self.assertEqual(run["items"][0]["title"], "checkout-api · libexample-xml")
             self.assertEqual((run["status"], run["by"]), ("finished", "by hand"))
             page = c.get(f"/runs/{run_id}").text
@@ -115,13 +116,14 @@ class Runs(Site):
             # the Output tab lists what the flow put in the run's output folder; next to it the engine keeps the run's log
             out = c.get(f"/api/runs/{run_id}/output").json()
             self.assertEqual([f["path"] for f in out["files"]], ["SEC-1042.html", "SEC-1043.html", "SEC-1044.html", "SEC-1045.html", "index.html", "run.log"])
-            self.assertEqual((out["finish"], out["files"][0]["href"], out["more"]), ("scripts/report.py", f"/runs/{run_id}/output/SEC-1042.html", 0))
+            self.assertEqual((out["files"][0]["href"], out["more"]), (f"/runs/{run_id}/output/SEC-1042.html", 0))
             self.assertIn(f'<a href="/runs/{run_id}/output/index.html" target="_blank"', c.get(f"/runs/{run_id}/output").text)
 
             # the flow as this run saw it, with what the run did at each stage
             nodes = {n["id"]: n for n in c.get(f"/api/runs/{run_id}/flow").json()["graph"]["nodes"]}
-            self.assertEqual(list(nodes), [":source", "gather", "analyse", "fix", "report", ":end"])
-            self.assertEqual(nodes[":end"]["lines"], ["scripts/report.py", "6 files"])
+            self.assertEqual(list(nodes), [":source", "gather", "analyse", "fix", "report", "publish", ":end"])
+            self.assertEqual((nodes["publish"]["kicker"], nodes["publish"]["lines"]), ("5 · script · once", ["scripts/report.py", "1 passed", "1 try"]))
+            self.assertEqual(nodes[":end"]["lines"], ["6 files"])
             self.assertEqual((nodes["analyse"]["state"], nodes["analyse"]["lines"][-2:]), ("done", ["3 passed", "7 tries"]))  # SEC-1045's analyst ended analyse as failed
             self.assertEqual((nodes[":end"]["state"], nodes[":end"]["href"]), ("done", f"/runs/{run_id}/output"))  # a run ends at its output folder
             stages = c.get(f"/api/runs/{run_id}/flow").json()["stages"]
@@ -151,7 +153,7 @@ class Runs(Site):
             run = c.get(f"/api/runs/{run_id}/trace").json()
             root = run["trace"]["root"]
             self.assertEqual([(s["kind"], s["name"]) for s in root["children"][:5]], [("fetch", "security-tickets")] + [("item", i) for i in ITEMS])
-            self.assertEqual([s["name"] for s in root["children"] if s["kind"] == "mark"], ["finish script"])  # the flow's own script makes the output; the engine sends nothing anywhere
+            self.assertEqual([(s["kind"], s["name"], s["children"][0]["name"]) for s in root["children"][5:]], [("item", "_all", "publish")])  # the flow's own stage makes the output; the engine has no step at the end
             for s in spans(run):  # every bar sits on the line, and no part begins before the run or ends after it
                 self.assertTrue(0 <= s["left"] <= 100 and 0 <= s["width"] and s["left"] + s["width"] <= 100.01, s["id"])
                 self.assertTrue(root["start"] - 0.001 <= s["start"] <= s["end"] <= root["end"] + 0.001, s["id"])
@@ -386,7 +388,7 @@ class Design(Site):
     def test_flows_agents_tools_and_sources(self):
         with TestClient(self.app) as c:
             listed = c.get("/api/plugins").json()
-            self.assertEqual([(f["name"], f["source"], f["stages"], f["errors"], f["last_run"]) for f in listed["flows"]], [("vuln-triage", "security-tickets", 4, [], None)])
+            self.assertEqual([(f["name"], f["source"], f["stages"], f["errors"], f["last_run"]) for f in listed["flows"]], [("vuln-triage", "security-tickets", 5, [], None)])
             used = {a["name"]: [(u["stage"], u["as"]) for u in a["used"]] for a in listed["agents"]}
             self.assertEqual(used, {"origin-analyst": [("analyse", "executor")]})  # the engine's own two agents are not plugins
             self.assertEqual({t["name"]: t["used"] for t in listed["tools"]}, {"deps-why": ["origin-analyst"], "history": [], "history-file": [], "sbom-query": ["origin-analyst"]})
@@ -440,10 +442,10 @@ class Design(Site):
             g = flow["graph"]
             self.assertEqual([(n["kicker"], n["title"]) for n in g["nodes"]],
                              [("source", "security-tickets"), ("1 · script", "gather"), ("2 · agent", "analyse"), ("3 · default agent", "fix"),
-                              ("4 · default agent", "report"), ("end", "output")])
+                              ("4 · default agent", "report"), ("5 · script · once", "publish"), ("end", "output")])
             edges = [(e["src"], e["dst"], e["on"], e["kind"]) for e in g["edges"]]
             self.assertEqual([e for e in edges if e[2] == "pass"], [(":source", "gather", "pass", "next"), ("gather", "analyse", "pass", "next"), ("analyse", "fix", "pass", "next"),
-                                                                     ("fix", "report", "pass", "next"), ("report", ":end", "pass", "next")])
+                                                                     ("fix", "report", "pass", "next"), ("report", "publish", "pass", "next"), ("publish", ":end", "pass", "next")])
             # one column, top to bottom: every box at the same x, each below the one before
             self.assertEqual(len({n["x"] for n in g["nodes"]}), 1)
             self.assertEqual([n["y"] for n in g["nodes"]], sorted(n["y"] for n in g["nodes"]))
@@ -470,7 +472,7 @@ class Design(Site):
             self.assertEqual((analyse["md"], analyse["md_href"]), ("stages/analyse.md", "/flows/vuln-triage/files?file=stages/analyse.md"))
             config = {r["k"]: r for r in flow["config"]}
             self.assertEqual({k: r["mark"] for k, r in config.items()},  # every limit the flow runs under, none of them its own
-                             {"source": "", "finish": "", "stand_in": "", "model": "platform default", **{f"limits.{k}": "platform default" for k in self.settings.limits}})
+                             {"source": "", "stand_in": "", "model": "platform default", **{f"limits.{k}": "platform default" for k in self.settings.limits}})
             for text in ('href="/flows/vuln-triage/files?file=stages/fix.md"', "Read origin.md and candidates.json.", 'href="/sources/security-tickets"',
                          '<span class="tag">default</span>', "For each security ticket", 'href="/flows/vuln-triage/files?file=flow.yaml"'):
                 self.assertIn(text, page)
