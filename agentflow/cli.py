@@ -175,7 +175,7 @@ def cmd_serve(a, settings, store) -> int:
 
     from agentflow.web import create_app
     if a.host not in ("127.0.0.1", "localhost"):
-        print("there is no sign-in: anyone who can reach this address can start runs and read every work folder. In a container, publish the port on 127.0.0.1 only.")
+        print("there is no sign-in: anyone who can reach this address can start runs and read every work folder. Leave --host out to serve this machine only.")
     print(f"agentflow on http://{a.host}:{a.port}{STAND_IN if settings.stand_in else ''}")
     uvicorn.run(create_app(settings, store, hosts=("127.0.0.1", "localhost", a.host)), host=a.host, port=a.port, log_level="warning")
     return 0

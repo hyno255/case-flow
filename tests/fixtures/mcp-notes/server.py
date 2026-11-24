@@ -2,7 +2,7 @@
 """A very small MCP server over stdio, with the standard library only, so it needs nothing installed.
 
 Two tools: `where` says what system it runs on, `note` writes a line into the current folder.
-A real one would be written with an MCP SDK installed in the engine's Dockerfile.
+A real one would be written with an MCP SDK.
 """
 import json
 import platform

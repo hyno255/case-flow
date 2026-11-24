@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "agentflow",
-      "runtimeExecutable": "docker",
-      "runtimeArgs": ["compose", "up", "--build"],
+      "runtimeExecutable": ".venv/bin/agentflow",
+      "runtimeArgs": ["serve"],
       "port": 8321
     }
   ]

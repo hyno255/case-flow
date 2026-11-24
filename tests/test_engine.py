@@ -519,8 +519,8 @@ def main() -> None:''').replace('"report": report}', '"report": report, "summary
 
 
 class Scripts(Home):
-    """What a script or a tool is given, and that the engine can always stop it. The container the engine runs in is what
-    separates a script from the machine; inside it a script is a child process with an environment of its own."""
+    """What a script or a tool is given, and that the engine can always stop it. A script is a child process of the engine,
+    run as the same user, with an environment of its own: what the engine tells it, and none of the engine's keys."""
 
     def setUp(self):
         super().setUp()

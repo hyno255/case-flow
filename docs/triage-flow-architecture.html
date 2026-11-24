@@ -2,7 +2,7 @@
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
 <style>
-  /* Layout: a reading column with a sticky index. One diagram of the container, then each part of the engine as tables and code blocks. */
+  /* Layout: a reading column with a sticky index. One diagram of the program on its machine, then each part of the engine as tables and code blocks. */
   :root {
     --bg: #F3F5F8;
     --surface: #FFFFFF;
@@ -135,7 +135,7 @@
 <nav class="index" aria-label="Sections">
   <span class="label">Overview</span>
   <a href="#short">In short</a>
-  <a href="#container">How it runs</a>
+  <a href="#runs">How it runs</a>
   <span class="label">Design</span>
   <a href="#plugins">Plugins</a>
   <a href="#graph">The flow as a graph</a>
@@ -156,89 +156,80 @@
 <header class="top">
   <span class="label">Reference · agentflow</span>
   <h1>Triage Flow Architecture</h1>
-  <p class="lede">agentflow is a small engine that runs triage flows over items fetched from a source. This page describes its parts: the container it runs in, the four plugin folders, the flow as a graph, what is stored, and the pages, API and commands.</p>
+  <p class="lede">agentflow is a small engine that runs triage flows over items fetched from a source. This page describes its parts: how it runs on your machine, the four plugin folders, the flow as a graph, what is stored, and the pages, API and commands.</p>
 </header>
 
 <section id="short">
   <h2>In short</h2>
   <div class="cards">
-    <div><b>One image, one process</b><span><code>docker compose up</code> starts one container. One process in it serves the pages and the API, keeps the schedules and runs the flows. There is no queue service.</span></div>
+    <div><b>One program, one process</b><span><code>agentflow serve</code> starts one process on your machine, as you. It serves the pages and the API, keeps the schedules and runs the flows. There is no container and no queue service.</span></div>
     <div><b>The flow is the unit</b><span>A run is always a run of one flow. What a run puts out is written by the flow's own script into the run's output folder. The engine renders nothing and sends nothing anywhere.</span></div>
     <div><b>Source hands over, flow accepts, engine routes</b><span>A source says how items are got and what it writes. A flow says which source it accepts, which of its items, and when. The engine fetches, checks and routes.</span></div>
     <div><b>A graph with bounded loops</b><span>A flow compiles to stages joined by pass edges and fail edges. A loop exists only on a fail edge, and <code>tries</code> bounds it.</span></div>
-    <div><b>Agents inside, scripts beside</b><span>Agents run in the engine's process on Pydantic AI and get only the tools they list. Scripts are plain child processes in the same container. A stage's work can also be handed to Codex or Claude Code.</span></div>
+    <div><b>Agents inside, scripts beside</b><span>Agents run in the engine's process on Pydantic AI and get only the tools they list. Scripts are plain child processes. A stage's work can also be handed to the Codex or Claude Code installed on the machine, on its own sign-in.</span></div>
     <div><b>A folder per item</b><span>Every stage reads and writes the item's work folder. It is the hand-over between stages and the evidence afterwards.</span></div>
     <div><b>Facts stored, status derived</b><span>One SQLite file holds runs, items, tries, verdicts and events. The pages, the API and the CLI read the same rows, so they agree.</span></div>
   </div>
 </section>
 
-<section id="container">
+<section id="runs">
   <h2>How it runs</h2>
-  <p>The engine runs inside one Docker image, built from the <code>Dockerfile</code> at the project root. Nothing of yours is in the image. <code>compose.yaml</code> attaches the settings, the plugins and the data folder when the container starts.</p>
-<pre class="solo"><span class="c">this machine                        one container · image agentflow · user agentflow, uid 1000</span>
-browser         ─ 127.0.0.1:8321 ─→ agentflow serve     <span class="c">pages · JSON API · scheduler · tool health · watchdog</span>
-agentflow.yaml  ─ read-only ──────→   └─ runner         <span class="c">fetch · queue · stage loop · join</span>
-plugins/        ─ read-only ──────→       ├─ scripts    <span class="c">fetch · run · check: child processes behind guard.py</span>  ─→ network
-.env            ─ as environment ─→       └─ agents     <span class="c">in the engine's process, on Pydantic AI</span>               ─→ model provider
-data/           ←─ read-write ────→            └─ tools <span class="c">a script per call, or an MCP server per agent run</span>     ─→ network
-                                    data/db/agentflow.db · data/runs/&lt;date&gt;-&lt;run id&gt;/</pre>
+  <p>The engine is a Python program on your machine, started as you. It has no container of its own. Scripts, tools and coding CLIs are its child processes, so they are the programs you have installed, with the sign-ins you already have.</p>
+<pre class="solo"><span class="c">this machine · your user · the home folder (where it is started, or AGENTFLOW_HOME)</span>
+browser ─ 127.0.0.1:8321 ─→ agentflow serve     <span class="c">pages · JSON API · scheduler · tool health · watchdog</span>
+agentflow.yaml · .env  ───→   └─ runner         <span class="c">fetch · queue · stage loop · join</span>
+plugins/  ────────────────→       ├─ scripts    <span class="c">fetch · run · check: child processes behind guard.py</span>
+data/  ←──────────────────→       ├─ agents     <span class="c">in the engine's process, on Pydantic AI</span>      ─→ model provider
+                                  │    └─ tools <span class="c">a script per call, or an MCP server per agent run</span>
+~/.codex · ~/.claude · keychain ←─└─ codex / claude  <span class="c">the CLI on your PATH, on its own sign-in</span>  ─→ its provider</pre>
   <div class="two">
     <div class="col">
-      <h3>The image</h3>
+      <h3>Start it</h3>
+<pre class="solo">python3 -m venv .venv                 <span class="c"># Python 3.12 or newer</span>
+.venv/bin/pip install -e .
+.venv/bin/agentflow serve             <span class="c"># the pages on http://localhost:8321</span>
+.venv/bin/agentflow check             <span class="c"># any command of the CLI</span>
+.venv/bin/agentflow run vuln-triage</pre>
       <div class="scroll"><table><tbody>
-        <tr><td class="key">Base</td><td><code>python:3.12-slim</code></td></tr>
-        <tr><td class="key">Programs for scripts</td><td><code>python3</code>, <code>git</code>, <code>jq</code>, <code>curl</code>, <code>nodejs</code>, <code>npm</code>, CA certificates</td></tr>
-        <tr><td class="key">Coding CLIs</td><td>Codex 0.166.0 and Claude Code 2.1.277, installed with npm at these versions</td></tr>
-        <tr><td class="key">The engine</td><td><code>pyproject.toml</code> and <code>agentflow/</code>, installed with pip. <code>.dockerignore</code> keeps every other file out.</td></tr>
-        <tr><td class="key">User and home</td><td><code>agentflow</code>, uid 1000 · <code>AGENTFLOW_HOME=/work</code></td></tr>
-        <tr><td class="key">Starts</td><td><code>agentflow serve --host 0.0.0.0</code> on port 8321. Any other command replaces <code>serve</code>.</td></tr>
+        <tr><td class="key">Home folder</td><td><code>agentflow.yaml</code>, <code>plugins/</code>, <code>data/</code>, <code>.env</code>. The engine writes only in <code>data/</code>.</td></tr>
+        <tr><td class="key">Programs for scripts</td><td>Whatever is on your <code>PATH</code>. Nothing is installed for you.</td></tr>
+        <tr><td class="key">Coding CLIs</td><td>The <code>codex</code> and <code>claude</code> on your <code>PATH</code>. <code>check</code> prints each one's version.</td></tr>
+        <tr><td class="key">Keys</td><td>Read from the environment and from <code>.env</code> in the home folder when the engine starts.</td></tr>
+        <tr><td class="key">Port</td><td>8321 on <code>127.0.0.1</code>, unless <code>--host</code> says otherwise.</td></tr>
       </tbody></table></div>
-<pre class="solo">docker compose up                                  <span class="c"># the pages on http://localhost:8321</span>
-docker compose run --rm agentflow check            <span class="c"># any command of the CLI</span>
-docker compose run --rm agentflow run vuln-triage</pre>
-      <p class="fine">Each <code>docker compose run</code> is a container of its own on the same <code>data/</code>; the pages show its runs, because they read the same store. To give scripts or MCP servers another program, add it to the <code>apt-get install</code> line of the <code>Dockerfile</code> and build the image again.</p>
     </div>
     <div class="col">
-      <h3>compose.yaml</h3>
-<pre class="solo">services:
-  agentflow:
-    build: .
-    image: agentflow
-    init: true                          <span class="c"># ends what a stopped script leaves behind</span>
-    ports: ["127.0.0.1:8321:8321"]      <span class="c"># this machine only: there is no sign-in</span>
-    environment:
-      TZ: ${TZ:-UTC}                    <span class="c"># schedules are read in this time zone</span>
-    env_file:
-      - path: .env                      <span class="c"># model keys</span>
-        required: false
-    volumes:
-      - ./agentflow.yaml:/work/agentflow.yaml:ro
-      - ./plugins:/work/plugins:ro      <span class="c"># flows, agents, tools, sources</span>
-      - ./data:/work/data               <span class="c"># runs, their output and the database</span>
-      <span class="c"># - ~/code/product:/mnt/product:ro   # any other folder your scripts read</span></pre>
+      <h3>Why there is no container</h3>
+      <p>A coding CLI in a Linux container cannot use the sign-in on the machine: on macOS Claude Code keeps it in the Keychain and Codex in its own home or the keyring, and neither reaches the container. Other tools that run local CLIs start them on the host too:</p>
+      <div class="scroll"><table class="wrap mid">
+        <thead><tr><th>Tool</th><th>Where the CLI is started</th><th>Sign-in</th></tr></thead><tbody>
+        <tr><td class="name">Multica</td><td>A daemon on the host. Only its server, web UI and database are in Docker.</td><td>The CLI's own</td></tr>
+        <tr><td class="name">Paperclip</td><td>One process on the host. Its Docker image needs a second sign-in inside, or keys.</td><td>The CLI's own, or a key</td></tr>
+        <tr><td class="name">Vibe Kanban</td><td>On the host, started with <code>npx</code>.</td><td>The CLI's own</td></tr>
+        <tr><td class="name">claude-squad</td><td>On the host, in a tmux session.</td><td>The CLI's own</td></tr>
+      </tbody></table></div>
     </div>
   </div>
   <div class="two">
     <div class="col">
-      <h3>What the container protects</h3>
+      <h3>What the engine controls</h3>
       <ul>
-        <li><b>The host.</b> The container is the boundary between scripts and the machine. A script sees the image and the attached folders, and nothing else of the machine.</li>
-        <li><b>The port.</b> 8321 is bound to <code>127.0.0.1</code> only. A change through the API needs the header <code>X-Agentflow: 1</code>.</li>
+        <li><b>The port.</b> 8321 is bound to <code>127.0.0.1</code> unless <code>--host</code> says otherwise. A change through the API needs the header <code>X-Agentflow: 1</code>.</li>
         <li><b>What a script is handed.</b> Its environment holds <code>PATH</code>, <code>LANG</code> and what the engine tells it: <code>AGENTFLOW_HOME</code>, <code>AGENTFLOW_FLOW</code>, <code>AGENTFLOW_FLOW_DIR</code>, <code>AGENTFLOW_RUN</code>, <code>AGENTFLOW_OUTPUT</code> (the run's output folder), <code>AGENTFLOW_ITEM_ID</code> for an item's scripts, and <code>AGENTFLOW_TRIAL</code> in a trial. A source's fetch script gets <code>AGENTFLOW_HOME</code> and <code>AGENTFLOW_OUT</code> (its output folder). Model keys are not passed on, and there is no way yet to hand a script a secret.</li>
         <li><b>Stopping.</b> A script starts behind <code>agentflow/workers/guard.py</code> in its own process group. The group is stopped when the script passes <code>script_seconds</code> (120 unless set), when its item runs out of time, when its run is cancelled, and when the engine goes away.</li>
-        <li><b>Agents.</b> An agent has no shell. Its file tools stay inside the item's folder: no absolute path, no <code>..</code>, no symbolic link, no writing the engine's files.</li>
+        <li><b>Agents.</b> An agent on the engine's own runtime has no shell. Its file tools stay inside the item's folder: no absolute path, no <code>..</code>, no symbolic link, no writing the engine's files.</li>
+        <li><b>A coding CLI.</b> It is handed where your home is (<code>HOME</code>, <code>USER</code>, <code>LOGNAME</code>, <code>SHELL</code>, <code>TMPDIR</code>) so that it finds its own sign-in, and nothing else of the engine's environment. Codex is started with writes limited to the work folder, and Claude Code with edits accepted there and no shell command but the tools it was given.</li>
       </ul>
     </div>
     <div class="col">
-      <h3>What it does not protect</h3>
-      <p class="note">Inside the container a script is a plain child process. It can read whatever is mounted in the container, and it can reach the network.</p>
+      <h3>What it does not</h3>
+      <p class="note">Nothing stands between a script and your machine. A script runs as you: it can read and write what you can, and it can reach the network. Run flows whose scripts you trust.</p>
       <ul>
-        <li>Nothing separates one script from another. A script runs as the same user as the engine.</li>
-        <li>A script can read <code>agentflow.yaml</code>, every plugin, and all of <code>data/</code>: other items, other runs, the database. It can write anywhere in <code>data/</code>.</li>
-        <li>There is no network rule per plugin, and no secret is handed to a script.</li>
-        <li>No plugin file mentions Docker. Every flow shares the one image, and <code>compose.yaml</code> sets no CPU or memory limit.</li>
-        <li>A coding CLI that does a stage has a shell of its own. Codex is started with its sandbox set to keep writes in the item's folder, and Claude Code accepts edits in the folder it starts in; the engine does not verify either.</li>
-        <li>An MCP server is started by the MCP client, not behind the guard. A script that moves itself to another session ends when the container does.</li>
+        <li>Nothing separates one script from another, or from the engine.</li>
+        <li>A script can read <code>agentflow.yaml</code>, <code>.env</code>, every plugin and all of <code>data/</code>, and anything else your user can.</li>
+        <li>There is no network rule per plugin, no CPU or memory limit, and no secret is handed to a script.</li>
+        <li>The limits a coding CLI works under are its own sandbox's. The engine sets them when it starts the CLI and does not verify them.</li>
+        <li>An MCP server is started by the MCP client, not behind the guard. A script that moves itself to another session is nobody's to stop.</li>
       </ul>
     </div>
   </div>
@@ -566,7 +557,7 @@ agentflow show                         <span class="c"># recent runs</span>
 agentflow show &lt;run&gt; [item] [--follow] <span class="c"># what a run did and cost</span>
 agentflow resume &lt;run&gt;   agentflow retry &lt;run&gt; [--item ID]   agentflow cancel &lt;run&gt;
 agentflow history [flow] [--item ID]   <span class="c"># for a flow's scripts: earlier runs, as JSON</span></pre>
-      <p class="fine"><code>try</code>, <code>run</code>, <code>resume</code>, <code>retry</code> and <code>serve</code> take <code>--stand-in</code>. In the container, put <code>docker compose run --rm</code> in front of a command.</p>
+      <p class="fine"><code>try</code>, <code>run</code>, <code>resume</code>, <code>retry</code> and <code>serve</code> take <code>--stand-in</code>. </p>
     </div>
   </div>
 </section>
@@ -575,9 +566,7 @@ agentflow history [flow] [--item ID]   <span class="c"># for a flow's scripts: e
   <h2>Project layout</h2>
   <div class="two">
     <div class="col">
-<pre class="solo">Dockerfile       <span class="c"># the image: the engine and the programs scripts call</span>
-compose.yaml     <span class="c"># what is attached, and the port</span>
-agentflow.yaml   <span class="c"># models, limits, engine timings</span>
+<pre class="solo">agentflow.yaml   <span class="c"># models, limits, engine timings</span>
 pyproject.toml   <span class="c"># the package and what it needs</span>
 .env             <span class="c"># model keys</span>
 agentflow/       <span class="c"># the engine package</span>
@@ -620,12 +609,12 @@ data/            <span class="c"># everything the engine writes</span></pre>
   <div class="scroll"><table class="wrap mid">
     <thead><tr><th>What</th><th>State</th><th>Detail</th></tr></thead><tbody>
     <tr><td class="name">Tests</td><td><span class="pill done">checked</span></td><td>53 tests pass on the stand-in: 23 on the engine, 9 on a stage done by a CLI, 6 on recovery, 15 on the pages.</td></tr>
-    <tr><td class="name">A stage on Codex</td><td><span class="pill done">checked</span></td><td>One trial item with gpt-6-luna and the key, on this machine and in the container: the item ended done. On this machine the analyse stage took 22.5 seconds and 95,901 tokens, priced at $0.0040; the engine's own harness took 7.4 seconds and 5,927 tokens, $0.0008.</td></tr>
+    <tr><td class="name">A stage on Codex</td><td><span class="pill done">checked</span></td><td>One trial item on 23 Nov 2026 with every stage and every review done by the Codex on this machine, on its own ChatGPT sign-in and gpt-6-luna, no key handed over: the item ended done in 55 seconds of stage work, 317,521 tokens. The reviewer's verdict came back in the shape asked for with <code>--output-schema</code>.</td></tr>
     <tr><td class="name">A stage on Claude Code</td><td><span class="pill hold">not checked</span></td><td>Its own sign-in on this machine had expired, so the real run ended with that error, which the item shows as its reason. Its output is read by the tests from a recorded shape only.</td></tr>
-    <tr><td class="name">In the container</td><td><span class="pill done">checked</span></td><td>On a Mac with Docker Desktop: the image builds, the server starts and checks the tools, and a flow runs from its page.</td></tr>
-    <tr><td class="name">The real model</td><td><span class="pill done">checked</span></td><td>In the container, one run of the four invented tickets, started from the flow's page: 2 done, 2 not done, 45 seconds, $0.0074.</td></tr>
-    <tr><td class="name">A schedule in the container</td><td><span class="pill hold">not checked</span></td><td>A due schedule starting its flow is tested outside the container only.</td></tr>
-    <tr><td class="name">Linux hosts</td><td><span class="pill hold">not checked</span></td><td>The image runs as uid 1000, so a host user with another uid may not be able to write <code>data/</code>.</td></tr>
+    <tr><td class="name">On the host</td><td><span class="pill done">checked</span></td><td>On a Mac: <code>check</code> passes, the tests pass, and the trial above ran from a throwaway home folder.</td></tr>
+    <tr><td class="name">The engine's own runtime on a real model</td><td><span class="pill hold">not checked since the change</span></td><td>The key in <code>.env</code> was refused as expired on 23 Nov 2026, so a reviewer on the API model ended with that error. It last ran with a valid key on 20 Nov 2026.</td></tr>
+    <tr><td class="name">Cost on a CLI's own sign-in</td><td><span class="pill hold">an estimate</span></td><td>Codex reports tokens, which are priced from the API price list ($0.0190 for the trial). A subscription is not billed that way, and the run's cost cap counts the estimate.</td></tr>
+    <tr><td class="name">Linux and Windows</td><td><span class="pill hold">not checked</span></td><td>Only macOS was run.</td></tr>
     <tr><td class="name">A second model provider</td><td><span class="pill hold">not checked</span></td><td>The LiteLLM entry is built and has never been called.</td></tr>
     <tr><td class="name">MCP with a real model</td><td><span class="pill hold">not checked</span></td><td>The tests call a small MCP server from the scripted model only.</td></tr>
     <tr><td class="name">Sign-in</td><td><span class="pill wait">none</span></td><td>Anyone who can reach the port can start runs and read every work folder.</td></tr>
@@ -633,7 +622,7 @@ data/            <span class="c"># everything the engine writes</span></pre>
 </section>
 
 <footer>
-  Saved in the project as <code>docs/triage-flow-architecture.html</code>. To check the plugin files and the settings: <code>docker compose run --rm agentflow check</code>.
+  Saved in the project as <code>docs/triage-flow-architecture.html</code>. To check the plugin files and the settings: <code>agentflow check</code>.
 </footer>
 
 </main>

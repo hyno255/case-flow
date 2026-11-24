@@ -3,8 +3,8 @@
 Each script runs in its own process group, behind guard.py. The group is stopped when the script runs past
 its own limit, when the item runs out of time, when the run is cancelled, and when the engine goes away.
 
-The engine runs inside one container image (see Dockerfile), and that container is what separates scripts from
-the machine it runs on. Inside it a script is a plain child process: it sees what the engine tells it, and none of the engine's keys.
+The engine is a program on this machine, and a script is a plain child process of it, run as the same user: it can do
+what that user can. What the engine controls is what a script is told: the variables it names, and none of the engine's keys.
 """
 import asyncio
 import os

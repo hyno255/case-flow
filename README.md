@@ -4,27 +4,38 @@ A small engine that takes items from a source (tickets, alerts, findings) throug
 by a script or an agent and then checked. It orchestrates and routes; everything specific lives in plugin folders.
 Every run can be traced down to each model call. What a run puts out, a report for example, is written by the flow's own script.
 
-The engine runs in one Docker image. Nothing of yours is inside it: settings, plugins, data and any other folder are attached when it starts.
+The engine is a Python program that runs on your machine, as you. It starts scripts and coding CLIs as plain child
+processes, so a stage can be done by the Codex or Claude Code you already have installed and signed in to.
 
 ## Run it
 
-```bash
-docker compose up --build
-```
-
-The web UI is on http://localhost:8321. Any command of the CLI runs the same way:
+It needs Python 3.12 or newer.
 
 ```bash
-docker compose run --rm agentflow check
+python3 -m venv .venv
 ```
 
 ```bash
-docker compose run --rm agentflow run vuln-triage --stand-in
+.venv/bin/pip install -e .
+```
+
+```bash
+.venv/bin/agentflow serve
+```
+
+The web UI is on http://localhost:8321. The other commands are run the same way (or activate the environment and type `agentflow`):
+
+```bash
+.venv/bin/agentflow check
+```
+
+```bash
+.venv/bin/agentflow run vuln-triage --stand-in
 ```
 
 `--stand-in` needs no key and costs nothing: the script the flow names as `stand_in` in its `flow.yaml` answers in the model's place
 (the example's is `plugins/flows/vuln-triage/scripts/stand_in.py`, which also says what it is asked and what it prints). For a real model, put its key in `.env`
-(for the example settings: `OPENAI_API_KEY=...`); `compose.yaml` passes that file to the container.
+(for the example settings: `OPENAI_API_KEY=...`); the engine reads that file when it starts.
 
 | Command | What it does |
 |---|---|
@@ -37,24 +48,28 @@ docker compose run --rm agentflow run vuln-triage --stand-in
 | `history [flow] [--item ID]` | for a flow's own scripts: how items ended in earlier runs and where their files are, as JSON |
 | `serve` | the web UI, the API, the schedules and the health checks |
 
-## What you attach
+## The home folder
 
-`compose.yaml` mounts these into the container:
+The engine works in one folder, its home: the folder you start it in, or the one `AGENTFLOW_HOME` names.
 
-| On your machine | In the container | What it is |
-|---|---|---|
-| `agentflow.yaml` | `/work/agentflow.yaml` (read-only) | models and limits |
-| `plugins/` | `/work/plugins` (read-only) | flows, agents, tools, sources |
-| `data/` | `/work/data` | the database, one folder per fetch, one folder per run |
-| any other folder | wherever you mount it | what your scripts need to read |
-| `.env` | environment | model keys |
+| In the home folder | What it is |
+|---|---|
+| `agentflow.yaml` | models and limits |
+| `plugins/` | flows, agents, tools, sources |
+| `data/` | the database, one folder per fetch, one folder per run; the engine writes nowhere else |
+| `.env` | model keys |
 
-A program that a script, a tool or an MCP server calls must be in the image: add it to the `apt-get install` line of the `Dockerfile`
-and build again. `nodejs` and `npm` are already there, with the two coding CLIs a stage's work can be handed to (see below).
+A program that a script, a tool or an MCP server calls is found on your `PATH`, like any program you run yourself.
 
-The container is the boundary between scripts and your machine. Inside it a script is a plain child process: it can read
-whatever is mounted and reach the network. It sees what the engine tells it and none of the engine's keys.
-There is no sign-in, so the port is published on `127.0.0.1` only.
+Nothing stands between a script and your machine. A script is a child process of the engine, run as you: it can read and
+write what you can, and reach the network. What the engine controls is narrower:
+
+- A script's environment holds only what the engine tells it, and none of the engine's keys.
+- An agent on the engine's own runtime has no shell, and its file tools stay inside the item's work folder.
+- A coding CLI keeps its own sandbox: Codex is started with writes limited to the work folder, Claude Code with edits accepted in it and no shell command but the tools it was given.
+- There is no sign-in, so `serve` listens on `127.0.0.1` unless `--host` says otherwise.
+
+Run flows whose scripts you trust, as you would any script.
 
 ## Plugins
 
@@ -159,8 +174,8 @@ agentflow history vuln-triage --item SEC-1042
 
 ```json
 [{"run": "r_85d6", "started": "2026-11-14T22:45:10-08:00", "trial": false, "item": "SEC-1042", "ended_as": "done", "reason": "",
-  "folder": "/work/data/runs/2026-11-14-r_85d6/items/SEC-1042", "files": ["fix.md", "origin.md", "report.md"],
-  "output": "/work/data/runs/2026-11-14-r_85d6/output"}]
+  "folder": "/Users/you/agentflow/data/runs/2026-11-14-r_85d6/items/SEC-1042", "files": ["fix.md", "origin.md", "report.md"],
+  "output": "/Users/you/agentflow/data/runs/2026-11-14-r_85d6/output"}]
 ```
 
 - Any script can call it: a source's fetch script to hand over only what is new, a stage script to end an item early.
@@ -209,8 +224,8 @@ models:
     model: luna-codex          # this stage's work is done by Codex
 ```
 
-- `harness` is `codex` or `claude`. With `api_key_env` the CLI is handed that key; without it the CLI uses its own sign-in,
-  which a container does not have.
+- `harness` is `codex` or `claude`. With `api_key_env` the CLI is handed that key; without it the CLI uses its own sign-in on this machine,
+  the one `codex login` or `claude` set up. The engine hands the CLI your home folder's location and nothing else of its environment.
 - A flow, a stage, an agent or a reviewer picks such a model, and so can `default_model`. A reviewer on a CLI works read-only
   and gives its verdict in the CLI's structured output (`--json-schema` for Claude Code, `--output-schema` for Codex).
 - The trace shows the CLI's run as one span with its seconds, tokens and cost. Everything the CLI printed is kept as
@@ -222,8 +237,7 @@ models:
 - The item's `minutes_per_item` is the CLI's time limit, and cancelling the run stops it.
 - `--stand-in` starts a stand-in CLI in its place, which does what the flow's `stand_in` script says: no sign-in, no cost.
 
-`agentflow check` says whether each CLI a model entry names is installed. The image has Codex and Claude Code at fixed versions
-(see the `Dockerfile`).
+The engine starts the `codex` or `claude` it finds on your `PATH`. `agentflow check` says whether each CLI a model entry names is installed, and its version.
 
 ## How an agent ends a stage, and who decides on another try
 
@@ -310,10 +324,6 @@ data/runs/<date>-<run id>/plugins/     the plugin files as the run saw them
 ```
 
 ## Develop
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -e .
-```
 
 ```bash
 .venv/bin/python -m unittest discover -s tests

@@ -5,7 +5,7 @@ also happens when the engine is killed with no chance to clean up, the read belo
 stops the script and everything the script started: first by asking, then by force.
 
 The engine stops the same group itself when an item runs out of time or its run is cancelled (procs.py).
-A script that moves itself to another session escapes both; it ends when the container does.
+A script that moves itself to another session escapes both, and is then nobody's to stop.
 
 Run as a file with the standard library only, so it needs nothing from the engine's environment.
 """
